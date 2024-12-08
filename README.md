@@ -11,7 +11,7 @@ Additionally, I provide a rendered HTML version where all inputs and outputs are
 offering the most comfortable way to view the whole analysing process.
 
 IMPORTANT NOTE: 
-Due to the size, it may be necessary to download and save the HTML and RMD files on your personal environment before opening..
+Due to the size, it may be necessary to download and save the HTML and RMD files on your personal environment before opening.
 
 This study was conducted using the programming language R and RMarkdown, tools designed for reproducible research.
 
