@@ -1,9 +1,10 @@
-# BAThesis
+# BAThesis: The Electronic Appendix of my Bachelor Thesis
 
+Topic:
 The Influence of Psychosocial Factors on the Intention to Pursue a Master’s Programme after the Bachelor’s Degree. 
 An Analysis Based on the 2021 German Student Survey conducted by DZHW
 
-Bachelor Thesis (December 2024)
+
 For detailed insights and full transparency of the analysis, I am publishing my script. 
 
 Additionally, I provide a rendered HTML version where all inputs and outputs are clearly structured and visible,
@@ -21,3 +22,4 @@ The .Rmd- file includes:
 
 Feel free to contact me for further questions!
 Ulrike Jooss
+(December 2024)
