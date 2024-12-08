@@ -1,0 +1,4332 @@
+---
+title: "<span style='font-size: 18pt;'>The Influence of Psychosocial Factors on the Intention to Pursue a Master's Programme after the Bachelor's Degree</span>"
+subtitle: "<span style='font-size: 16pt;'>An Analysis based on the 2021 German Student Survey conducted by DZHW</span>"
+author: "<span style='font-size: 12pt;'>Ulrike Jooss, 17000859</span>"
+date: "<span style='font-size: 12pt;'>`r Sys.Date()`</span>"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 5
+    number_sections: no
+    toc_float:
+      collapsed: yes
+---
+
+## 1 Setup: General Settings
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### 1.1 Loading required packages
+
+```{r packages, message=FALSE, warning=FALSE}
+
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  install.packages("pacman")
+}
+
+pacman::p_load(
+  haven, here, tidyverse, knitr, kableExtra, likert,
+  sjmisc, sjlabelled, sjPlot, psych, labelled, 
+  stargazer, gmodels, ggplot2, gtsummary, car,
+  ResourceSelection, pROC, pwr, sandwich, lmtest,
+  gridExtra, mgcv, dotwhisker, broom, margins)
+
+
+```
+
+### 1.2 Data Import
+
+#### Original Dataset
+
+Campus Use File (CUF) sid2021:1.0.1, DZHW
+
+#### Access
+
+-   have a look at <https://fdz.dzhw.eu/de/datennutzung>
+
+-   ask FDZ for permission to download CUF sid2021:1.0.1:\
+    [https://metadata.fdz.dzhw.eu/de/data-packages/sid2021](https://metadata.fdz.dzhw.eu/de/data-packages/stu-sid2021?page=1&size=10&type=surveys&version=1.0.1){.uri}
+
+-   DOI: <https://doi.org/10.21249/DZHW:sid2021:1.0.1>
+
+```{r main, message=FALSE, warning=FALSE}
+
+# main <- read_dta("data/sid2021_main_p_c_1-0-0.dta")
+# saveRDS(main, file = "data/main.Rds")
+
+data <- readRDS("data/main.Rds")
+# main: 187 935 obs. of 1656 variables
+
+
+```
+
+### 1.3 Variable Selection
+
+```{r varSelection, message=FALSE, warning=FALSE}
+
+
+data <- data |>
+  select(mastplan_p, FG1_STB_p,
+        sperleisrel, studerfolg, masterfolg_p,
+        promoerfolg, sask1, sask2, sask4, sask5, 
+        pswskill, pswkraft, pswaufg, 
+        sscokli1, sscokli2, sscokli3, sscokli4, 
+        sscokli5, sscokli6,
+        demosex_p_g, demoage_g2, akad_sid)
+
+saveRDS(data, "data/data0.Rds")
+# data0: 187935 obs. of 22 vars
+
+
+```
+
+
+
+### 1.4 Missing Values Declaration
+
+```{r na-Declaration, message=FALSE, warning=FALSE}
+
+all_possible_values <- data.frame(
+    mastplan_p = c(-998, -996, -989, -987, -969, 
+               -967, -966, -929, -13, -12, -11),
+    Label = c("no response",
+            "interview aborted",
+            "missing due to filter",
+             "missing due to design (split questionnaire)",
+             "unknown missing value",
+             "anonymized",
+             "undetermined",
+             "data loss",
+             "no response (refusal)",
+             "don't know",
+             "not applicable"))
+
+# Join
+na_declaration <- all_possible_values |>
+  left_join(
+    data |>
+      filter(mastplan_p < 1) |>
+      group_by(mastplan_p) |>
+       summarise(Frequency = n()),
+     by = "mastplan_p")
+
+# Replace NA with 0 for missing frequencies
+na_declaration$Frequency[is.na(na_declaration$Frequency)] <- 0
+
+knitr::kable(na_declaration,
+     caption = "NA Declaration",
+     col.names = c("Value", "Description", "Frequency"))
+
+# save output as .txt:
+# write.table(na_declaration,
+#             file = here::here("data/na_declaration.txt"),
+#             sep = "", col.names = TRUE, row.names = TRUE)
+
+
+```
+
+### 1.5 Sample construction
+
+```{r mastpl, message=FALSE, warning=FALSE}
+
+attach(data)
+frq(mastplan_p)
+
+```
+
+
+```{r reduce-to-intention, message=FALSE, warning=FALSE}
+
+ data <- data |> 
+   filter(mastplan_p >= 1 & mastplan_p <= 5)
+
+ #data: 97974 observations, 22 variables
+
+data0 <- data
+
+
+```
+
+
+### 1.6 Detect data loss
+
+```{r missings, message=FALSE, warning=FALSE}
+
+# Method to Detect Data Loss Due to Missing Values
+# Count Missings by Variable
+
+missing_vals <- c(-998, -996, -989, -987, -969, -967, -966, -929, -13, -12, -11)
+
+
+data <- data |>
+  mutate(across(everything(), ~ set_na(., na = missing_vals)))
+
+na_counts <- sapply(data, function(x) sum(is.na(x)))
+# na_counts
+na_counts_sorted <- sort(na_counts, decreasing = TRUE)
+na_counts_sorted
+
+```
+
+
+### 1.7 Export cleaned Sample
+
+```{r readData, message=FALSE, warning=FALSE}
+
+data_clean <- na.omit(data)
+
+# data cleaned: 25398  observations of 22 variables
+saveRDS(data_clean, file = "data/data_clean.Rds")
+
+# call:
+data <- readRDS("data/data_clean.Rds")
+
+
+```
+
+### 1.8 Functions
+
+*selectVars()* generates an overview of variables (name, label, descriptive summary).
+
+*selectVarTable()* generates a formatted table (name, label).
+
+```{r selectVars, message=FALSE, warning=FALSE}
+
+# output: Variable Name, Label, Descriptive Statistics
+
+selectVars <- function(var_list) {
+  for (var_name in var_list) {
+    var_label <- attributes(get(var_name))$label
+    cat(var_name, ":", var_label, "\n")
+    print(describe(get(var_name)))
+    cat("\n")
+  }
+}
+
+# pimp the output: formated Table with Name, Label
+
+selectVarTable <- function(var_list) {
+  results <- data.frame(
+    VarName = character(),
+    Label = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (var_name in var_list) {
+    var_data <- get(var_name, envir = .GlobalEnv)
+    var_label <- attributes(var_data)$label
+    
+    results <- rbind(results, data.frame(
+      VarName = var_name,
+      Label = var_label,
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+ kableExtra::kable(results, format = "markdown", 
+      col.names = c("Variable Name", "Label"))
+}
+
+
+# use:
+# attach(data)
+# var_list <- c("var1", "var2")
+# selectVars(var_list)
+# selectVarTable(var_list)
+
+
+```
+
+## 2 Variables
+
+### 2.1 Outcome  *intention*
+
+```{r intention, message=FALSE, warning=FALSE}
+
+attach(data)
+frq(mastplan_p)
+
+data <- data  |> 
+  mutate(intention = case_when(
+    mastplan_p %in% c(4, 5) ~ 1,
+    mastplan_p %in% c(1, 2) ~ 0,
+    TRUE ~ NA_real_
+  ))
+
+data <- data |> 
+  filter(!is.na(intention)) 
+
+data <- data |> 
+  set_labels(intention, 
+             labels = c("no Master intended" = 0, 
+                        "Master intended" = 1))
+
+data$intention <- set_label(
+  data$intention, label = "Intention to pursue a Master's degree")
+
+
+# sample size: 20 891 observations of 23 variables
+
+attach(data)
+frq(intention, show.na = FALSE)
+
+
+dataLoss <- round((20891 / 97974) *100, digits = 2)
+cat(dataLoss, "% of the Bachelor students remain in this sample.")
+
+
+```
+
+### 2.2 Predictor *selfAssessment*
+
+
+```{r selfAssList, message=FALSE, warning=FALSE}
+
+selfAss_list <- c("sperleisrel", "studerfolg", 
+                  "masterfolg_p", "promoerfolg",
+                  "sask1", "sask4")
+
+selectVarTable(selfAss_list)
+
+
+```
+
+Translation
+
+```{r selfAssVars, message=FALSE, warning=FALSE}
+
+#frq(sperleisrel, show.na = FALSE)
+data$sperleisrel <- set_label(data$sperleisrel,
+  label = "Rate your academic performance vs. peers")
+
+data <- data |> 
+  set_labels(sperleisrel, 
+             labels = c("below average" = 1,
+                        "2" = 2,
+                        "average" =3,
+                        "4" = 4,
+                        "above average" = 5))
+# attach(data)
+# frq(sperleisrel, show.na = FALSE)
+# 
+# frq(studerfolg, show.na = FALSE)
+    
+data$studerfolg <- set_label(data$studerfolg,
+  label = "How confident are you in completing your studies?")
+data <- data |> 
+  set_labels(studerfolg, 
+             labels = c("not at all" = 1,
+                        "2" = 2,
+                        "3" =3,
+                        "4" = 4,
+                        "totally" = 5))
+# attach(data)
+# frq(studerfolg, show.na = FALSE)
+# 
+# frq(masterfolg_p, show.na =FALSE)
+data$masterfolg_p <- set_label(data$masterfolg_p,
+  label = "How confident are you in completing a master’s degree?")
+data <- data |> 
+  set_labels(masterfolg_p, 
+             labels = c("not at all" = 1,
+                        "2" = 2,
+                        "3" =3,
+                        "4" = 4,
+                        "totally" = 5))
+# attach(data)
+# frq(masterfolg_p, show.na = FALSE)
+# 
+# frq(promoerfolg, show.na = FALSE)
+data$promoerfolg <- set_label(data$promoerfolg,
+  label = "How confident are you in completing a doctorate?")
+data <- data |> 
+  set_labels(promoerfolg, 
+             labels = c("not at all" = 1,
+                        "2" = 2,
+                        "3" =3,
+                        "4" = 4,
+                        "totally" = 5))
+# attach(data)
+# frq(promoerfolg, show.na = FALSE)
+# 
+# frq(sask1, show.na = FALSE)
+data$sask1 <- set_label(data$sask1,
+  label = "How would you rate your talent for studying?")
+data <- data |> 
+  set_labels(sask1, 
+             labels = c("poor" = 1,
+                        "2" = 2,
+                        "3" =3,
+                        "4" = 4,
+                        "excellent" = 5))
+# attach(data)
+# frq(sask1, show.na = FALSE)
+# 
+# frq(sask4, show.na =  FALSE)
+data$sask4 <- set_label(data$sask4,
+  label = "My study-related skills are ...")
+data <- data |> 
+  set_labels(sask4, 
+             labels = c("poor" = 1,
+                        "2" = 2,
+                        "3" =3,
+                        "4" = 4,
+                        "excellent" = 5))
+# attach(data)
+# frq(sask4, show.na = FALSE)
+
+
+```
+
+VarList
+
+```{r selfAss-list, message=FALSE, warning=FALSE}
+
+attach(data)
+selfAss_list <- c("sperleisrel", "studerfolg", 
+                  "masterfolg_p", "promoerfolg",
+                  "sask1", "sask4")
+
+var_list <- selfAss_list
+#selectVarTable(var_list)
+selectVars(var_list)
+
+```
+
+#### Cronbach's Alpha
+
+```{r selfAss, message=FALSE, warning=FALSE}
+
+selfAss_items <- data |>
+  select(sperleisrel, studerfolg, masterfolg_p,
+         promoerfolg, sask1, sask4)
+psych::alpha(selfAss_items)
+
+```
+
+
+#### Index *self Assessment*
+
+```{r selfAssessment, message=FALSE, warning=FALSE}
+
+var_list <- selfAss_list
+selectVarTable(var_list)
+
+selfAss_index <- rowMeans(selfAss_items)
+data <- data |> 
+  mutate(selfAssessment = rowMeans(selfAss_items))
+
+attach(data)
+summary(selfAssessment)
+
+
+```
+
+
+
+### 2.3 Predictor *selfConcept*
+
+Translation
+
+```{r sc-transl, message=FALSE, warning=FALSE}
+
+attach(data)
+selfConc_list <- c("pswskill", "pswkraft", "pswaufg", "sask2", "sask5")
+selectVarTable(selfConc_list)
+
+#frq(pswskill, show.na = FALSE)
+data$pswskill <- set_label(data$pswskill,
+    label = "In difficult situations, I can rely upon my abilities.")
+data <- data |> 
+  set_labels(pswskill, 
+             labels = c("Not at all" = 1,
+                        "2" = 2,
+                        "average" =3,
+                        "4" = 4,
+                        "Totally" = 5))
+# attach(data)
+# frq(pswskill, show.na = FALSE)
+# 
+# 
+# frq(pswkraft, show.na = FALSE)
+data$pswkraft <- set_label(data$pswkraft,
+    label = "I can easily handle most problems on my own.")
+data <- data |> 
+  set_labels(pswkraft, 
+             labels = c("Not at all" = 1,
+                        "2" = 2,
+                        "average" =3,
+                        "4" = 4,
+                        "Totally" = 5))
+# attach(data)
+# frq(pswkraft, show.na = FALSE)
+# 
+# frq(pswaufg, show.na = FALSE)
+data$pswaufg <- set_label(data$pswaufg,
+    label = "I am generally good at tackling even demanding and complex challenges.")
+data <- data |> 
+  set_labels(pswaufg, 
+             labels = c("Not at all" = 1,
+                        "2" = 2,
+                        "average" =3,
+                        "4" = 4,
+                        "Totally" = 5))
+# attach(data)
+# frq(pswaufg, show.na = FALSE)
+# 
+# 
+# frq(sask2, show.na = FALSE)
+data$sask2 <- set_label(data$sask2,
+  label = "Learning new things is...")
+data <- data |> 
+  set_labels(sask2, 
+             labels = c("... hard for me" = 1,
+                        "2" = 2,
+                        "3" =3,
+                        "4" = 4,
+                        "... easy for me" = 5))
+# attach(data)
+# frq(sask2, show.na = FALSE)
+# 
+# 
+# frq(sask5, show.na = FALSE)
+data$sask5 <- set_label(data$sask5,
+  label = "Meeting my academic responsibilities is...")
+data <- data |> 
+  set_labels(sask5, 
+             labels = c("... hard for me" = 1,
+                        "2" = 2,
+                        "3" =3,
+                        "4" = 4,
+                        "... easy for me" = 5))
+# attach(data)
+# frq(sask5, show.na = FALSE)
+
+
+```
+
+VarList
+
+```{r selfConc-list, message=FALSE, warning=FALSE}
+
+
+
+attach(data)
+selfConc_list <- c("pswskill", "pswkraft", "pswaufg", "sask2", "sask5")
+
+selectVars(selfConc_list)
+
+
+```
+
+
+#### Cronbach's Alpha
+
+```{r selfConc, message=FALSE, warning=FALSE}
+
+selfConc_items <- data |> 
+ select(pswskill, pswkraft, pswaufg, sask2, sask5)
+ psych::alpha(selfConc_items, check.keys = TRUE)
+
+```
+
+#### Index *selfConcept*
+
+```{r selfConcept, message=FALSE, warning=FALSE}
+
+selfConc_index <- rowMeans(selfConc_items)
+data <- data |> 
+  mutate(selfConcept = rowMeans(selfConc_items))
+
+attach(data)
+summary(selfConcept)
+
+
+selectVarTable(selfConc_list)
+
+
+```
+
+
+
+### 2.4 Predictor Perceived *support*
+
+Translation
+
+```{r supp-Vars, message=FALSE, warning=FALSE}
+
+supp_list <- c("sscokli1", "sscokli2", "sscokli3", "sscokli4", "sscokli5", "sscokli6")
+selectVarTable(supp_list)
+
+# 5-point Likert- Scale: 
+# "1 = Not at all" up to "5 = Corresponds exactly"
+
+data$sscokli1 <- set_label(data$sscokli1,
+    label = "Teachers address students' difficulties.")
+data$sscokli2 <- set_label(data$sscokli2,
+    label = "Students generally support each other.")
+data$sscokli3 <- set_label(data$sscokli3,
+    label = "Teachers are co-operative and open minded.")
+data$sscokli4 <- set_label(data$sscokli4,
+    label = "It is common for students to work together during their studies.")
+data$sscokli5 <- set_label(data$sscokli5,
+    label = "Teachers take time to address the needs of students.")
+data$sscokli6 <- set_label(data$sscokli5,
+    label = "Students demonstrate solidarity with each other.")
+
+
+#selectVarTable(var_list)
+selectVars(supp_list)
+
+
+```
+
+#### Cronbach's Alpha
+
+```{r supp-allItems, message=FALSE, warning=FALSE}
+
+supp_allItems <- data |> 
+  select(sscokli1, sscokli2, sscokli3, 
+         sscokli4, sscokli5, sscokli6)
+psych::alpha(supp_allItems)
+
+```
+
+Drop
+
+```{r support-4items, message=FALSE, warning=FALSE}
+
+# 2 items dropped: sscokli2 and sscokli4
+supp_items <- data |> 
+  select(sscokli1, sscokli3, sscokli5, sscokli6)
+psych::alpha(supp_items)
+
+```
+
+#### Index *support*
+
+
+```{r support, message=FALSE, warning=FALSE}
+
+supp_list4 <- c("sscokli1", "sscokli3", "sscokli5", "sscokli6")
+var_list <- supp_list4
+selectVarTable(var_list)
+
+supp_index <- rowMeans(supp_items)
+data <- data |> 
+  mutate(support = rowMeans(supp_items))
+
+attach(data)
+summary(support)
+
+selectVarTable(supp_list4)
+
+
+```
+
+
+
+### 2.5 Confounder *age*
+
+```{r demoage_g2, message=FALSE, warning=FALSE}
+
+attach(data)
+frq(demoage_g2)
+
+data<-data |>
+ mutate(age_cat = case_when(
+ demoage_g2 %in% 1 ~ 1,
+ demoage_g2 %in% 2 ~ 2,
+ demoage_g2 %in% 3 ~ 3,
+ demoage_g2 %in% 4 ~ 4,
+ demoage_g2 %in% 5 ~ 5,
+ TRUE ~ NA_real_
+ ))
+
+data <- data |>
+ filter(!is.na(age_cat))
+data<-data |>
+ set_labels(age_cat,
+ labels=c("19 years and younger"= 1,
+ "20 - 22 years" = 2,
+ "23 - 25 years" = 3,
+ "26 - 30 years" = 4,
+ "31 years and older" = 5))
+
+data$age_cat <- set_label(data$age_cat, "age in categories")
+
+attach(data)
+frq(age_cat, show.na = FALSE)
+
+
+```
+
+Dummy *age*:
+
+```{r  age-dummy, warning=FALSE, message=FALSE}
+
+data <- data |>
+ mutate(age = case_when(
+ age_cat %in% c(1, 2) ~ 0,
+ age_cat %in% c(3, 4, 5) ~1))
+
+data <- data |> 
+  set_labels(age,
+             labels =c(
+             "22 years and younger" = 0,
+             "23 years and older" = 1))
+data$age <- set_label(data$age, "Dummy Age")
+
+attach(data)
+frq(age, show.na = FALSE)
+
+```
+
+### 2.6 Confounder *gender*
+
+```{r gender, message=FALSE, warning=FALSE}
+
+attach(data)
+frq(demosex_p_g)
+
+data<-data |>
+ mutate(gender = case_when(
+ demosex_p_g %in% 1 ~ 1,
+ demosex_p_g %in% 2 ~ 2,
+ TRUE ~ NA_real_
+ ))
+
+data<-data |>
+ filter(!is.na(gender))
+ data<-data |>
+ set_labels(gender,
+ labels=c("male"= 1,
+ "female" = 2))
+
+data$gender <- set_label(data$gender, "gender")
+
+attach(data)
+frq(gender, show.na = FALSE)
+
+```
+
+### 2.7 Confounder *parentsEducation*
+
+```{r parEduc, message=FALSE, warning=FALSE}
+
+frq(akad_sid)
+
+data<-data |>
+ mutate(parentsEducation = case_when(
+ akad_sid %in% 0 ~ 0,
+ akad_sid %in% 1 ~ 1,
+ TRUE ~ NA_real_
+ ))
+
+data<-data |>
+ filter(!is.na(parentsEducation))
+data<-data |>
+ set_labels(parentsEducation,
+ labels=c("non academic"= 0,
+ "academic" = 1))
+
+data$parentsEducation <- set_label(
+  data$parentsEducation, "Parents' Education")
+
+attach(data)
+frq(parentsEducation, show.na = FALSE)
+
+
+```
+
+### 2.8 Confounder Subject of *study*
+
+```{r study, message=FALSE, warning=FALSE}
+
+attach(data)
+frq(FG1_STB_p)
+
+
+data<-data |>
+ mutate(FG1_STB_p = FG1_STB_p,
+   study_subject = case_when(
+ FG1_STB_p %in% 1 ~ 1,
+ FG1_STB_p %in% 2 ~ 2,
+ FG1_STB_p %in% 3 ~ 3,
+ FG1_STB_p %in% 4 ~ 4,
+ FG1_STB_p %in% 5 ~ 5,
+ FG1_STB_p %in% 7 ~ 6,
+ FG1_STB_p %in% 8 ~ 7,
+ FG1_STB_p %in% 9 ~ 8,
+ FG1_STB_p %in% 10 ~ 9,
+ TRUE ~ NA_real_
+ ))
+attach(data)
+#frq(study)
+#frq(FG1_STB_p)
+
+data<-data |>
+ filter(!is.na(study_subject))
+ data<-data |>
+ set_labels(study_subject,
+ labels=c("Humanities"= 1,
+ "Sports" = 2,
+ "Law, Economics, Social Sciences" = 3,
+ "Mathematics, Natural Sciences" = 4,
+ "Human Medicine/Health Sciences" = 5,
+ "Life Sciences" = 6,
+"Engineering" = 7,
+"Arts, Art Studies" = 8,
+"Outside the scope of study area" = 9))
+
+data$study_subject <- set_label(data$study_subject,
+              "Subject of Study")
+
+attach(data)
+frq(study_subject, show.na = FALSE)
+
+
+```
+
+Dummy *study*:
+
+```{r study-dummy, message=FALSE, warning=FALSE}
+
+data <- data |>
+ mutate(studySubject = case_when(
+ study_subject %in% c(1,2,3,8,9) ~ 0,
+ study_subject %in% c(4,5,6,7) ~1))
+
+
+attach(data)
+#frq(study)
+
+data <- data |> 
+  set_labels(studySubject,
+             labels =c(
+             "non technical/natural sciences" = 0,
+             "technical/natural sciences" = 1))
+data$study <- set_label(data$studySubject, "Dummy Study")
+
+attach(data)
+frq(studySubject)
+
+
+```
+
+## 3 Descriptives
+
+### 3.1 Outcome
+
+```{r descrOutcome, message=FALSE, warning=FALSE}
+
+#frq(data$intention, show.na = FALSE)
+# pimp the output:
+
+intention_table <- table(data$intention)
+intention_prop <- prop.table(intention_table) * 100
+cumulative_prop <- cumsum(intention_prop)
+
+intention_freq <- data.frame(
+  Value = as.numeric(names(intention_table)),
+  Label = c("no Master intended", "Master intended"),
+  N = as.vector(intention_table),
+  Raw_Percent = round(as.numeric(intention_prop), 2),
+  Valid_Percent = round(as.numeric(intention_prop), 2),
+  Cumulative_Percent = round(as.numeric(cumulative_prop), 2))
+
+kableExtra::kable(intention_freq, format = "html", 
+      col.names = c("Value", "Label", "N", "Raw %", "Valid %", "Cum. %"), 
+      caption = "Intention to pursue a Master's degree")  |> 
+  kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  #column_spec(1, bold = TRUE) |>  
+  #column_spec(3:6, color = "blue") |>  
+  add_header_above(c(" ", "Frequencies Master Intention" = 5))
+
+
+```
+
+### 3.2 Summary Predictors
+
+```{r descrPred, message=FALSE, warning=FALSE}
+
+summary_data <- data.frame(
+  Variable = c("selfAssessment", "selfConcept", "support"),
+  Min = c(min(data$selfAssessment), 
+          min(data$selfConcept), min(data$support)),
+  `1st Qu.` = c(quantile(data$selfAssessment, 0.25),
+                quantile(data$selfConcept, 0.25), 
+              quantile(data$support, 0.25)),
+  Median = c(median(data$selfAssessment),
+             median(data$selfConcept), 
+             median(data$support)),
+  Mean = c(mean(data$selfAssessment), 
+           mean(data$selfConcept), 
+           mean(data$support)),
+  `3rd Qu.` = c(quantile(data$selfAssessment, 0.75),
+                quantile(data$selfConcept, 0.75),
+                quantile(data$support, 0.75)),
+  Max = c(max(data$selfAssessment), 
+          max(data$selfConcept), 
+          max(data$support))
+)
+
+
+```
+
+Table
+
+```{r pimped-preds, message=FALSE, warning=FALSE}
+
+
+summary_pred <- data.frame(
+  Variable = c("selfAssessment", "selfConcept", "support"),
+  Min = c(1, 1, 1),
+  `1st.Qu.` = c(3.125, 3.333, 3),
+  Median = c(3.625, 4, 3.75),
+  Mean = c(3.582, 3.829, 3.553),
+  `3rd.Qu.` = c(4.125, 4.333, 4),
+  Max = c(5, 5, 5))
+
+
+kableExtra::kable(summary_pred, format = "html", 
+      caption = "Summary of Predictors")  |> 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), 
+                full_width = F) 
+
+
+```
+
+#### 3.2.1 selfAssessment
+
+Summary
+
+```{r sA-Index-pimped, message=FALSE, warning=FALSE}
+
+alpha_result <- psych::alpha(selfAss_items)
+
+self_assessment_summary <- data.frame(
+  Metric = c("raw_alpha", "std.alpha", "average_r",
+             "mean", "sd", "median_r"),
+  Value = c(
+    if("raw_alpha" %in% names(alpha_result$total)) alpha_result$total$raw_alpha else NA,
+    if("std.alpha" %in% names(alpha_result$total)) alpha_result$total$std.alpha else NA,
+    if("average_r" %in% names(alpha_result$total)) alpha_result$total$average_r else NA,
+    if("mean" %in% names(alpha_result$total)) alpha_result$total$mean else NA,
+    if("sd" %in% names(alpha_result$total)) alpha_result$total$sd else NA,
+    if("median_r" %in% names(alpha_result$total)) alpha_result$total$median_r else NA))
+
+kable(self_assessment_summary, 
+      format = "html", 
+      caption = "Index selfAssessment") |> 
+  kable_styling(
+    bootstrap_options = c("striped", "hover",
+                          "condensed", "responsive"),
+                full_width = F)
+
+```
+
+
+Likert- Plot
+
+```{r factorsSelfAss, message=FALSE, warning=FALSE, fig.width=8, fig.height=3}
+
+data_copy <- data
+
+df_likertSA <- data.frame(
+  "sperleisrel" = data_copy$sperleisrel,
+  "studerfolg" = data_copy$studerfolg,
+  "masterfolg_p" = data_copy$masterfolg_p,
+  "promoerfolg" = data_copy$promoerfolg,
+  "sask1" = data_copy$sask1,
+  "sask4" = data_copy$sask4)
+
+df_likertSA$Q1_f <- as.factor(df_likertSA$sperleisrel)
+df_likertSA$Q2_f <- as.factor(df_likertSA$studerfolg)
+df_likertSA$Q3_f <- as.factor(df_likertSA$masterfolg_p)
+df_likertSA$Q4_f <- as.factor(df_likertSA$promoerfolg)
+df_likertSA$Q5_f <- as.factor(df_likertSA$sask1)
+df_likertSA$Q7_f <- as.factor(df_likertSA$sask4)
+
+
+
+levels <- c("Below Average", "2", "3", "4", "Above Average")
+
+levels(df_likertSA$Q1_f) <- levels
+levels(df_likertSA$Q2_f) <- levels
+levels(df_likertSA$Q3_f) <- levels
+levels(df_likertSA$Q4_f) <- levels
+levels(df_likertSA$Q5_f) <- levels
+levels(df_likertSA$Q7_f) <- levels
+
+
+df_likertSA2 <- df_likertSA[, c("Q1_f", "Q2_f", "Q3_f", "Q4_f", "Q5_f", "Q7_f")]
+
+
+varHeadings <- c("Own Success compared to peers", 
+                 "Degree Completion Capability", 
+                 "Master Completion Capability", 
+                 "Doctorate Completion Capability",
+                 "Self Assess Own Talent", 
+                 "Self Assess study-related Skills")
+                 
+names(df_likertSA2) <- varHeadings
+
+likert_dataSA <- likert(df_likertSA2)
+
+blues_palette <- RColorBrewer::brewer.pal(5, "Blues")
+
+
+likert_plotSA <- plot(likert_dataSA) + 
+  ggtitle("selfAssessment") + 
+  labs(caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal() + 
+  theme(legend.position = "bottom") 
+
+likert_plotSA <- likert_plotSA + scale_fill_manual(values = blues_palette)
+
+likert_plotSA
+
+```
+
+
+
+#### 3.2.2 selfConcept
+
+Summary
+
+```{r sC-Index-pimped, message=FALSE, warning=FALSE, fig.width=8, fig.height=3}
+
+alpha_resultSC <- psych::alpha(selfConc_items)
+
+selfConc_summary <- data.frame(
+  Metric = c("raw_alpha", "std.alpha", "average_r",
+             "mean", "sd", "median_r"),
+  Value = c(
+    if("raw_alpha" %in% names(alpha_resultSC$total)) alpha_resultSC$total$raw_alpha else NA,
+    if("std.alpha" %in% names(alpha_resultSC$total)) alpha_resultSC$total$std.alpha else NA,
+    if("average_r" %in% names(alpha_resultSC$total)) alpha_resultSC$total$average_r else NA,
+    if("mean" %in% names(alpha_resultSC$total)) alpha_resultSC$total$mean else NA,
+    if("sd" %in% names(alpha_resultSC$total)) alpha_result$total$sd else NA,
+    if("median_r" %in% names(alpha_resultSC$total)) alpha_resultSC$total$median_r else NA))
+
+kable(selfConc_summary, 
+      format = "html", 
+      caption = "Index selfConcept") |> 
+  kable_styling(
+    bootstrap_options = c("striped", "hover",
+                          "condensed", "responsive"),
+                full_width = F)
+
+```
+
+Likert- Plot
+
+```{r factorsSelfConc, message=FALSE, warning=FALSE, fig.width=8, fig.height=3}
+
+attach(data_copy)
+
+df_likertSC <- data.frame(
+  "pswskill" = data_copy$pswskill,
+  "pswkraft" = data_copy$pswkraft,
+  "pswaufg" = data_copy$pswaufg,
+  "sask2" = data_copy$sask2,
+  "sask5" = data_copy$sask5)
+
+df_likertSC$Q1_f <- as.factor(df_likertSC$pswskill)
+df_likertSC$Q2_f <- as.factor(df_likertSC$pswkraft)
+df_likertSC$Q3_f <- as.factor(df_likertSC$pswaufg)
+df_likertSC$Q6_f <- as.factor(df_likertSC$sask2)
+df_likertSC$Q8_f <- as.factor(df_likertSC$sask5)
+
+
+levels <- c("1 = Not at all", "2", "3", "4", "5 = Totally")
+
+levels(df_likertSC$Q1_f) <- levels
+levels(df_likertSC$Q2_f) <- levels
+levels(df_likertSC$Q3_f) <- levels
+levels(df_likertSC$Q6_f) <- levels
+levels(df_likertSC$Q8_f) <- levels
+
+
+df_likertSC2 <- df_likertSC[, c("Q1_f", "Q2_f", "Q3_f", "Q6_f", "Q8_f")]
+
+
+varHeadingsSC <- c("Rely on Abilities", 
+                   "Ability to Handle Problems",
+                   "Ability to Tackle Challenges",
+                   "Self Assess Learning New Things",
+                   "Ability to Complete Academic Tasks")
+names(df_likertSC2) <- varHeadingsSC
+
+likert_dataSC <- likert(df_likertSC2)
+
+likert_plotSC <- plot(likert_dataSC) + 
+  ggtitle("selfConcept") +
+  labs(caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  scale_fill_manual(values = blues_palette) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+likert_plotSC <- likert_plotSC + 
+  scale_fill_manual(values = blues_palette)
+
+likert_plotSC
+
+
+```
+
+
+
+#### 3.2.3 Support
+
+Summary
+
+
+```{r sU-Index-pimped, message=FALSE, warning=FALSE}
+
+alpha_resultSu <- psych::alpha(supp_allItems)
+
+supp_summary <- data.frame(
+  Metric = c("raw_alpha", "std.alpha", "average_r",
+             "mean", "sd", "median_r"),
+  Value = c(
+    if("raw_alpha" %in% names(alpha_resultSu$total)) alpha_resultSu$total$raw_alpha else NA,
+    if("std.alpha" %in% names(alpha_resultSu$total)) alpha_resultSu$total$std.alpha else NA,
+    if("average_r" %in% names(alpha_resultSu$total)) alpha_resultSu$total$average_r else NA,
+    if("mean" %in% names(alpha_resultSu$total)) alpha_resultSu$total$mean else NA,
+    if("sd" %in% names(alpha_resultSu$total)) alpha_resultSu$total$sd else NA,
+    if("median_r" %in% names(alpha_resultSu$total)) alpha_resultSu$total$median_r else NA))
+
+kable(supp_summary, 
+      format = "html", 
+      caption = "Index Support") |> 
+  kable_styling(
+    bootstrap_options = c("striped", "hover",
+                          "condensed", "responsive"),
+                full_width = F)
+
+
+```
+
+Likert-Plot
+
+```{r factorSup, message=FALSE, warning=FALSE, fig.width=8, fig.height=2.5}
+
+# selectVars(supp_list)
+
+
+df_likertSU <- data.frame(
+  "sscokli1" = data_copy$sscokli1,
+  "sscokli3" = data_copy$sscokli3,
+  "sscokli5" = data_copy$sscokli5,
+  "sscokli6" = data_copy$sscokli6
+)
+
+df_likertSU$Q1_f <- as.factor(df_likertSU$sscokli1)
+df_likertSU$Q3_f <- as.factor(df_likertSU$sscokli3)
+df_likertSU$Q5_f <- as.factor(df_likertSU$sscokli5)
+df_likertSU$Q6_f <- as.factor(df_likertSU$sscokli6)
+
+
+levels <- c("1 = Not at all",
+                   "2", "3", "4", 
+                   "5 = Corresponds exactly")
+levels(df_likertSU$Q1_f) <- levels
+levels(df_likertSU$Q3_f) <- levels
+levels(df_likertSU$Q5_f) <- levels
+levels(df_likertSU$Q6_f) <- levels
+
+
+df_likertSU2 <- df_likertSU[, c("Q1_f", "Q3_f", "Q5_f", "Q6_f")]
+
+varHeadingsSU <- c("Teachers Address Difficulties", "Teachers are co-operative", "Teachers Address Needs", "Students Show Solidarity")
+names(df_likertSU2) <- varHeadingsSU
+
+
+likert_dataSU <- likert(df_likertSU2)
+#plot(likert_dataSU) + ggtitle("Perceived Support Responses")
+
+likert_plotSU <- plot(likert_dataSU) + 
+  ggtitle("Perceived Support") +
+  labs(caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  scale_fill_manual(values = blues_palette) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+likert_plotSU <- likert_plotSU +
+  scale_fill_manual(values = blues_palette)
+
+likert_plotSU
+
+
+```
+
+
+
+### 3.3 Confounders
+
+#### Dummy Age
+
+```{r descrAge, message=FALSE, warning=FALSE}
+
+age_table <- table(data$age)
+age_prop <- prop.table(age_table) * 100
+age_cum_prop <- cumsum(age_prop)
+
+age_freq <- data.frame(
+  Value = as.numeric(names(age_table)),
+  Label = c("22 years and younger", "23 years and older"),
+  N = as.vector(age_table),
+  Raw_Percent = round(as.numeric(intention_prop), 2),
+  Valid_Percent = round(as.numeric(age_prop), 2),
+  Cumulative_Percent = round(as.numeric(age_cum_prop), 2))
+
+kableExtra::kable(age_freq, format = "html", 
+      col.names = c("Value", "Label", "N", "Raw %", "Valid %", "Cum. %"), 
+      caption = "Dummy Age")  |> 
+  kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  #column_spec(1, bold = TRUE) |>  
+  #column_spec(3:6, color = "blue") |>  
+  add_header_above(c(" ", "Frequencies Dummy Age" = 5))
+
+```
+
+#### Dummy Parents' Education
+
+```{r descrParEdu, message=FALSE, warning=FALSE}
+
+# frq(data$parentsEducation, show.na = FALSE)
+
+parentEduc_table <- table(data$parentsEducation)
+parentEduc_prop <- prop.table(parentEduc_table) * 100
+parentEduc_cum_prop <- cumsum(parentEduc_prop)
+
+parentEduc_freq <- data.frame(
+  Value = as.numeric(names(parentEduc_table)),
+  Label = c("non academic", "academic"),
+  N = as.vector(parentEduc_table),
+  Raw_Percent = round(as.numeric(parentEduc_prop), 2),
+  Valid_Percent = round(as.numeric(parentEduc_prop), 2),
+  Cumulative_Percent = round(as.numeric(parentEduc_cum_prop), 2))
+
+kableExtra::kable(parentEduc_freq, format = "html", 
+      col.names = c("Value", "Label", "N", "Raw %", "Valid %", "Cum. %"), 
+      caption = "Dummy Parents' Education")  |> 
+  kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  #column_spec(1, bold = TRUE)  |> 
+ # column_spec(3:6, color = "blue") |> 
+  add_header_above(c(" ", 
+      "Frequencies Parents' Education" = 5))
+
+
+```
+
+#### Dummy Subject of Study
+
+```{r descrStudy, message=FALSE, warning=FALSE}
+
+#frq(data$study_dummy, show.na = FALSE)
+
+study_dummy_table <- table(data$studySubject)
+study_dummy_prop <- prop.table(study_dummy_table) * 100
+study_dummy_cum_prop <- cumsum(study_dummy_prop)
+
+study_dummy_freq <- data.frame(
+  Value = as.numeric(names(study_dummy_table)),
+  Label = c("non technical/natural sciences", 
+            "technical/natural sciences"),
+  N = as.vector(study_dummy_table),
+  Raw_Percent = round(as.numeric(study_dummy_prop), 2),
+  Valid_Percent = round(as.numeric(study_dummy_prop), 2),
+  Cumulative_Percent = round(as.numeric(study_dummy_cum_prop), 2))
+
+kableExtra::kable(study_dummy_freq, format = "html", 
+      col.names = c(
+        "Value", "Label", "N", "Raw %", "Valid %", "Cum. %"), 
+      caption = "Dummy Subject of Study")  |> 
+  kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  #column_spec(1, bold = TRUE)  |> 
+  #column_spec(3:6, color = "blue")  |> 
+  add_header_above(c(" ", "Frequencies Dummy Study" = 5))
+
+
+```
+
+## 4 Test Procedures
+
+### 4.1 t- Tests, Confidence Intervals
+
+```{r ttest, message=FALSE, warning=FALSE}
+
+# mean differences
+
+t_test_selfAss <- t.test(
+  selfAssessment ~ intention, data = data)
+
+t_test_selfConc <- t.test(
+  selfConcept ~ intention, data = data)
+
+t_test_supp <- t.test(
+  support ~ intention, data = data)
+
+t_test_selfAss
+t_test_selfConc
+t_test_supp
+
+
+```
+
+
+
+### 4.2 Errors Type I / II, Test Power
+
+*selfAssessment*
+
+```{r pwr-SA, message=FALSE, warning=FALSE}
+
+
+alpha <- 0.05  
+
+mean_group_0 <- mean(
+  data$selfAssessment[data$intention == 0], na.rm = TRUE)
+mean_group_1 <- mean(
+  data$selfAssessment[data$intention == 1], na.rm = TRUE)
+
+sd_group_0 <- sd(
+  data$selfAssessment[data$intention == 0], na.rm = TRUE)
+sd_group_1 <- sd(
+  data$selfAssessment[data$intention == 1], na.rm = TRUE)
+
+
+pooled_sd <- sqrt(((sd_group_0^2 + sd_group_1^2) / 2))
+
+# Cohen's d
+d <- (mean_group_1 - mean_group_0) / pooled_sd
+
+n_group_0 <- sum(data$intention == 0)
+n_group_1 <- sum(data$intention == 1)
+
+#  Calculation of Test Power
+pwr_result_SA <- pwr.t.test(
+  d = d,
+  n = min(n_group_0, n_group_1), 
+  sig.level = 0.05, 
+  type = "two.sample", 
+  alternative = "two.sided")
+
+pwr_result_SA
+
+
+```
+
+
+*selfConcept*
+
+```{r pwr-SC, message=FALSE, warning=FALSE}
+
+
+alpha <- 0.05  
+
+mean_group_0 <- mean(
+  data$selfConcept[data$intention == 0], na.rm = TRUE)
+mean_group_1 <- mean(
+  data$selfConcept[data$intention == 1], na.rm = TRUE)
+
+sd_group_0 <- sd(
+  data$selfConcept[data$intention == 0], na.rm = TRUE)
+sd_group_1 <- sd(
+  data$selfConcept[data$intention == 1], na.rm = TRUE)
+
+
+pooled_sd <- sqrt(((sd_group_0^2 + sd_group_1^2) / 2))
+
+# Cohen's d
+d <- (mean_group_1 - mean_group_0) / pooled_sd
+
+n_group_0 <- sum(data$intention == 0)
+n_group_1 <- sum(data$intention == 1)
+
+# Calculation of Test Power
+pwr_result_SC <- pwr.t.test(
+  d = d,
+  n = min(n_group_0, n_group_1), 
+  sig.level = 0.05, 
+  type = "two.sample", 
+  alternative = "two.sided")
+
+pwr_result_SC
+
+
+```
+
+
+
+*Support*
+
+```{r pwr-Su, message=FALSE, warning=FALSE}
+
+
+alpha <- 0.05  
+
+mean_group_0 <- mean(
+  data$support[data$intention == 0], na.rm = TRUE)
+mean_group_1 <- mean(
+  data$support[data$intention == 1], na.rm = TRUE)
+
+sd_group_0 <- sd(
+  data$support[data$intention == 0], na.rm = TRUE)
+sd_group_1 <- sd(
+  data$support[data$intention == 1], na.rm = TRUE)
+
+
+pooled_sd <- sqrt(((sd_group_0^2 + sd_group_1^2) / 2))
+
+# Cohen's d
+d <- (mean_group_1 - mean_group_0) / pooled_sd
+
+n_group_0 <- sum(data$intention == 0)
+n_group_1 <- sum(data$intention == 1)
+
+# Calculation of Test Power
+pwr_result_SU <- pwr.t.test(
+  d = d,
+  n = min(n_group_0, n_group_1), 
+  sig.level = 0.05, 
+  type = "two.sample", 
+  alternative = "two.sided")
+
+
+pwr_result_SU
+
+```
+
+
+### 4.3 Chi² Analysis
+
+#### 4.3.1 Chi² outcome / predictors
+
+```{r chitest-sum0, message=FALSE, warning=FALSE}
+
+chi_intSA <- chisq.test(
+                table(data$intention, data$selfAssessment))
+
+chi_intSC <- chisq.test(
+                table(data$intention, data$selfConcept))
+
+chi_intSU <- chisq.test(
+                table(data$intention, data$support))
+
+
+chi_results0 <- data.frame(
+  Variable = c("selfAssessment", "selfConcept", "support"),
+  X_squared = c(chi_intSA$statistic,
+                chi_intSC$statistic,
+                chi_intSU$statistic),
+  df = c(chi_intSA$parameter,
+         chi_intSC$parameter,
+         chi_intSU$parameter),
+  p_value = c(chi_intSA$p.value,
+              chi_intSC$p.value,
+              chi_intSU$p.value))
+
+chi_results0$p_value <- format.pval(chi_results0$p_value, digits = 5)
+
+
+kableExtra::kable(chi_results0, format = "html", 
+      caption = "Chi² Test: Outcome and Predictors") |>
+      kable_styling(bootstrap_options = c("striped",
+      "hover", "condensed", "responsive"), full_width = F)
+
+
+```
+
+
+
+#### 4.3.2 Chi² outcome / confounder
+
+age
+
+```{r intAge, message=FALSE, warning=FALSE}
+
+#### intention / age
+
+# contingency
+# CrossTable(data$intention, data$age)
+
+# Chi-squared test
+chi_intAge <- chisq.test(
+  table(data$intention, data$age))
+
+
+#chi_intAge
+
+```
+
+
+gender
+
+```{r intGender, message=FALSE, warning=FALSE}
+
+#### intention / gender
+
+# contingency table
+#CrossTable(data$intention, data$gender)
+#table(data$intention, data$gender)
+
+# Chi-Square-Test 
+chi_intGen <- chisq.test(
+  table(data$intention, data$gender))
+#chi_intGen
+
+```
+
+
+parents' education
+
+```{r intPar, message=FALSE, warning=FALSE}
+
+#### intention / parents' education
+
+# contingency table
+#CrossTable(data$intention, data$akad_sid)
+
+# Chi-squared- test
+chi_parentEduc <- chisq.test(
+  table(data$intention, data$parentsEducation))
+#chi_squared_intAkad
+
+```
+
+
+subject of study
+
+```{r intStudy, message=FALSE, warning=FALSE}
+
+#### intention / subject of study
+
+# contingency
+#CrossTable(data$intention, data$study)
+
+# Chi squared test
+chi_intStudy <- chisq.test(
+  table(data$intention, data$studySubject))
+#chi_intStudy
+
+
+```
+
+summary
+
+```{r chitest-sum1, message=FALSE, warning=FALSE}
+
+chi_results <- data.frame(
+  Variable = c("age", "gender", "parentsEducation", "study"),
+  X_squared = c(chi_intAge$statistic,
+                chi_intGen$statistic,
+                chi_parentEduc$statistic,
+                chi_intStudy$statistic),
+  df = c(chi_intAge$parameter,
+         chi_intGen$parameter,
+         chi_parentEduc$parameter,
+         chi_intStudy$parameter),
+  p_value = c(chi_intAge$p.value,
+              chi_intGen$p.value,
+              chi_parentEduc$p.value,
+              chi_intStudy$p.value))
+
+chi_results$p_value <- format.pval(chi_results$p_value, digits = 3)
+
+
+kableExtra::kable(chi_results, format = "html", 
+      caption = "Chi² Test: Outcome and Confounder") |>
+      kable_styling(bootstrap_options = c("striped", "hover",
+              "condensed", "responsive"), full_width = F)
+
+
+```
+
+
+
+===\> gender: no statistical significance ===\> drop confounder gender
+
+
+
+#### 4.3.3 Chi² predictors / confounder
+
+*selfAssessment / confounder*
+
+selfAssessment / age
+
+```{r selfAss-Age, message=FALSE, warning=FALSE}
+
+#CrossTable(data$selfAssessment, data$age)
+chi_selfAss_age <- chisq.test(
+  table(data$selfAssessment, data$age))
+#chi_selfAss_age
+
+
+```
+
+selfAssessment / parentsEducation
+
+```{r selfAss-akad, message=FALSE, warning=FALSE}
+
+#CrossTable(data$selfAssessment, data$akad_sid)
+
+chi_parentEduc <- chisq.test(
+  table(data$selfAssessment, data$parentsEducation))
+#chi_selfAss_akad
+
+```
+
+selfAssessment / study
+
+```{r selfAss-study, message=FALSE, warning=FALSE}
+
+#CrossTable(data$selfAssessment, data$studySubject)
+
+chi_selfAss_study <- chisq.test(
+  table(data$selfAssessment, data$studySubject))
+#chi_selfAss_study
+
+
+```
+
+*Summary selfAssessment / confounder*
+
+```{r chitest-sum2, message=FALSE, warning=FALSE}
+
+chi_results2 <- data.frame(
+  Variable = c("age", "parentsEducation", "study"),
+  X_squared = c(chi_selfAss_age$statistic,
+                chi_parentEduc$statistic,
+                chi_selfAss_study$statistic),
+  df = c(chi_selfAss_age$parameter,
+         chi_parentEduc$parameter,
+         chi_selfAss_study$parameter),
+  p_value = c(chi_selfAss_age$p.value,
+              chi_parentEduc$p.value,
+              chi_selfAss_study$p.value))
+
+chi_results2$p_value <- format.pval(chi_results2$p_value, digits = 3)
+
+
+kableExtra::kable(chi_results2, format = "html", 
+      caption = "Chi² Test: selfAssessment and Confounder") |>
+      kable_styling(bootstrap_options = c("striped", "hover",
+              "condensed", "responsive"), full_width = F)
+
+```
+
+
+*selfConcept / confounder*
+
+selfConcept / age
+
+```{r selfConc-Age, message=FALSE, warning=FALSE}
+
+#CrossTable(data$selfConcept, data$age)
+
+chi_selfConc_age <- chisq.test(
+  table(data$selfConcept, data$age))
+#chi_selfConc_age
+
+```
+
+selfConcept / parentsEducation
+
+```{r selfConc-par, message=FALSE, warning=FALSE}
+
+#CrossTable(data$selfConcept, data$akad_sid)
+
+chi_selfConc_par <- chisq.test(
+  table(data$selfConcept, data$parentsEducation))
+#chi_selfConc_akad
+
+```
+
+selfConcept / study
+
+```{r selfConc-study, message=FALSE, warning=FALSE}
+
+#CrossTable(data$selfConcept, data$studySubject)
+
+chi_selfConc_study <- chisq.test(
+  table(data$selfConcept, data$studySubject))
+#chi_selfConc_study
+
+
+```
+
+
+*Summary selfConcept / confounder*
+
+```{r chitest-sum3, message=FALSE, warning=FALSE}
+
+
+chi_results3 <- data.frame(
+  Variable = c("age", "parentsEducation", "study"),
+  X_squared = c(chi_selfConc_age$statistic,
+                chi_selfConc_par$statistic,
+                chi_selfConc_study$statistic),
+  df = c(chi_selfConc_age$parameter,
+         chi_selfConc_par$parameter,
+         chi_selfConc_study$parameter),
+  p_value = c(chi_selfConc_age$p.value,
+              chi_selfConc_par$p.value,
+              chi_selfConc_study$p.value))
+
+chi_results3$p_value <- format.pval(chi_results3$p_value, digits = 3)
+
+
+kableExtra::kable(chi_results3, format = "html", 
+      caption = "Chi² Test: selfConcept and Confounder") |>
+      kable_styling(bootstrap_options = c("striped", "hover",
+              "condensed", "responsive"), full_width = F)
+
+
+
+```
+
+
+*support / Confounder*
+
+support / age
+
+```{r supp-age, message=FALSE, warning=FALSE}
+
+#CrossTable(data$support, data$age)
+
+chi_supp_age <- chisq.test(
+  table(data$support, data$age))
+#chi_supp_age
+
+
+```
+
+support / parentsEducation
+
+```{r supp-akad, message=FALSE, warning=FALSE}
+
+#CrossTable(data$support, data$parentsEducation)
+
+chi_supp_par <- chisq.test(
+  table(data$support, data$parentsEducation))
+#chi_supp_akad
+
+```
+
+support / study
+
+```{r supp-study, message=FALSE, warning=FALSE}
+
+#CrossTable(data$support, data$study)
+
+chi_supp_study <- chisq.test(
+  table(data$support, data$studySubject))
+#chi_supp_study
+
+
+```
+
+*Summary support / Confounder*
+
+```{r chitest-sum4, message=FALSE, warning=FALSE}
+
+
+chi_results4 <- data.frame(
+  Variable = c("age", "parentsEducation", "study"),
+  X_squared = c(chi_supp_age$statistic,
+                chi_supp_par$statistic,
+                chi_supp_study$statistic),
+  df = c(chi_supp_age$parameter,
+         chi_supp_par$parameter,
+         chi_supp_study$parameter),
+  p_value = c(chi_supp_age$p.value,
+              chi_supp_par$p.value,
+              chi_supp_study$p.value))
+
+chi_results4$p_value <- format.pval(chi_results4$p_value, digits = 3)
+
+
+kableExtra::kable(chi_results4, format = "html", 
+      caption = "Chi² Test: Perceived Support and Confounder") |>
+      kable_styling(bootstrap_options = c("striped", "hover",
+              "condensed", "responsive"), full_width = F)
+
+
+
+```
+
+
+#### 4.3.4 Chi² between predictors
+
+```{r chitestPreds, message=FALSE, warning=FALSE}
+
+chi_pred1 <- chisq.test(table(data$selfAssessment,
+                              data$selfConcept))
+
+chi_pred2 <- chisq.test(table(data$selfAssessment,
+                              data$support))
+
+chi_pred3 <- chisq.test(table(data$selfConcept,
+                              data$support))
+
+
+chi_pred <- data.frame(
+  Variable = c("selfAssessment", "selfConcept", "support"),
+  X_squared = c(chi_pred1$statistic,
+                chi_pred2$statistic,
+                chi_pred3$statistic),
+  df = c(chi_pred1$parameter,
+         chi_pred2$parameter,
+         chi_pred3$parameter),
+  p_value = c(chi_pred1$p.value,
+              chi_pred2$p.value,
+              chi_pred3$p.value))
+
+chi_pred$p_value <- format.pval(chi_pred$p_value, digits = 3)
+
+
+kableExtra::kable(chi_pred, format = "html", 
+      caption = "Chi² Test: Predictors") |>
+      kable_styling(bootstrap_options = c("striped", "hover",
+              "condensed", "responsive"), full_width = F)
+
+
+```
+
+
+The very high Chi² values and extremely low p-values indicate that the null hypothesis (that the variables are independent of each other) is rejected in all cases. 
+
+There are significant associations between the variables under investigation (selfAssessment, selfConcept, and support).
+
+Furthermore, the results suggest a potential issue with *heteroscedasticity*, as indicated by the variability in the effect sizes and large Chi² values.
+
+Additionally, these findings may indicate the presence of *multicollinearity*, as strong associations between predictors can complicate the interpretation of their individual effects in a model.
+
+=> The VIF test and Breusch-Pagan test for further investigation
+
+
+### 4.4 VIF- Test
+
+The Variance Inflation Factor (VIF) test is used to check for *multicollinearity* in regression models. Multicollinearity occurs when predictor variables are highly correlated, which can affect the stability and interpretation of the regression coefficients.
+
+```{r vif-test, message=FALSE, warning=FALSE}
+
+
+plain_model <- glm(
+  intention ~ selfAssessment + selfConcept + support, 
+  data = data, family = binomial)
+
+
+perform_chisq_tests <- function(data, predictors) {
+  results <- list()
+  for (i in 1:(length(predictors) - 1)) {
+    for (j in (i + 1):length(predictors)) {
+      table <- table(data[[predictors[i]]], data[[predictors[j]]])
+      test_result <- chisq.test(table)
+      results[[paste(predictors[i], "vs",
+                     predictors[j])]] <- test_result
+    }
+  }
+  return(results)
+}
+
+
+predictors <- c("selfAssessment","selfConcept", "support") 
+chi_results <- perform_chisq_tests(data, predictors)
+
+model <- plain_model
+vif(model)
+
+```
+
+Interpretation:
+
+VIF < 1: No correlation among predictor variables.
+1 ≤ VIF < 5: Low to moderate correlation that is generally acceptable.
+VIF ≥ 5: High correlation, potential multicollinearity issue.
+VIF ≥ 10: Very high correlation, serious multicollinearity issue.
+
+Given that all VIF values are below 5, this indicates that there is *no significant multicollinearity* among the predictor variables. Overall, the VIF test results suggest that multicollinearity is not a concern in your model, and the predictor variables are not highly correlated with each other. This means the regression coefficients should be stable and interpretable.
+
+
+### 4.5 Breusch-Pagan-Test
+
+The Studentized Breusch-Pagan test is used to detect *heteroscedasticity* in a regression model. Heteroscedasticity occurs when the variance of the residuals (errors) is not constant across all levels of the independent variables. This can affect the validity of statistical tests and confidence intervals.
+
+```{r bptest, message=FALSE, warning=FALSE}
+
+lmtest::bptest(model)
+
+```
+
+
+Since the p-value is extremely small, we reject the null hypothesis of homoscedasticity. This means there is *significant evidence of heteroscedasticity* in the model. In other words, the variance of the residuals is not constant, and this violation needs to be addressed to ensure the reliability of the regression results.
+
+Potential remedies for heteroscedasticity:
+- transforming the dependent variable, or
+- adding relevant predictors, or 
+- using robust standard errors. 
+It is important to address heteroscedasticity to improve the accuracy and validity of the regression analysis.
+
+
+=\> The variance of the error terms is not constant and changes with the value of one or more independent variables. 
+
+=\> Adding predictors is not the goal, so consider transforming the outcome or using robust standard errors (see Chapter 5: Options for Modeling).
+
+
+
+### 4.6 Visual Inspection
+
+#### 4.6.1 Direct Predictors' Effects
+
+*selfAssessment*
+
+```{r effectSA, message=FALSE, warning=FALSE}
+
+effect_SA <- glm(intention ~ selfAssessment, 
+                 data = data, family = binomial) 
+df_sa <- data.frame(
+  selfAssessment = seq(min(data$selfAssessment),
+                       max(data$selfAssessment),
+                       length.out = 100)) 
+
+df_sa$predicted <- predict(effect_SA, 
+                           newdata = df_sa, 
+                           type = "response") 
+
+ggplot(df_sa, 
+       aes(x = selfAssessment, y = predicted)) + 
+    geom_line(color = "darkgreen", size = 1) + 
+  geom_segment(aes(x = 1, y = 0, xend = 5, yend = 1),
+               linetype = "dashed", color = "black") +
+  labs(title = "Direct Effect of selfAssessment",
+       x = "selfAssessment",
+       y = "Predicted Probability of Intention") + 
+  theme_minimal()
+
+```
+
+=> critical Non-linear Effect
+
+*selfConcept*
+
+```{r effectSC, message=FALSE, warning=FALSE}
+
+effect_sc <- glm(intention ~ selfConcept, 
+                 data = data, family = binomial)
+
+df_sc <- data.frame(
+  selfConcept = seq(min(data$selfConcept),
+                    max(data$selfConcept),
+                    length.out = 100))
+
+df_sc$predicted <- predict(effect_sc, 
+                           newdata = df_sc, 
+                           type = "response")
+
+ggplot(df_sc, 
+       aes(x = selfConcept, y = predicted)) + 
+  geom_line(color = "darkred", size = 1) +
+  geom_segment(aes(x = 1, y = 0.2, xend = 5, yend = 0.9),
+               linetype = "dashed", color = "black") +
+  labs(title = "Direct Effect of selfConcept", 
+       x = "selfConcept", 
+       y = "Predicted Probability of Intention") + 
+  theme_minimal()
+
+
+
+```
+
+=> non-linear Effect, not critical
+
+*support*
+
+```{r effectSu, message=FALSE, warning=FALSE}
+
+effect_su <- glm(intention ~ support, 
+                 data = data, 
+                 family = binomial)
+
+df_su <- data.frame(support = seq(min(data$support),
+                                  max(data$support),
+                                  length.out = 100)) 
+
+df_su$predicted <- predict(effect_su, 
+                           newdata = df_su, 
+                           type = "response")
+
+ggplot(df_su, 
+       aes(x = support, y = predicted)) + 
+  geom_line(color = "darkblue", size = 1) + 
+  geom_segment(aes(x = 1, y = 0.58, 
+               xend = 5, yend = 0.78),
+               linetype = "dashed", 
+               color = "black") +
+  labs(title = "Direct Effect of support",
+       x = "support", 
+       y = "Predicted Probability of Intention") + 
+  theme_minimal()
+
+
+```
+
+=> non critical Effect
+
+
+#### 4.6.2 Residuals Plots
+
+*selfAssessment*
+
+```{r resplotSA, message=FALSE, warning=FALSE}
+
+effect_SA <- glm(intention ~ selfAssessment, 
+                 data = data, family = binomial)
+
+ggplot(data = data,
+       aes(x = fitted(effect_SA),
+           y = resid(effect_SA))) +
+  geom_point(color = "darkblue", alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "darkred") +
+  labs(x = "Fitted Values", y = "Residuals") +
+  ggtitle("Residuals vs. Fitted Values selfAssessment") +
+  theme_minimal()
+
+
+```
+
+*selfConcept*
+
+```{r resplotSC, message=FALSE, warning=FALSE}
+
+effect_sc <- glm(intention ~ selfConcept, 
+                 data = data, family = binomial)
+
+ggplot(data = data,
+       aes(x = fitted(effect_sc),
+           y = resid(effect_sc))) +
+  geom_point(color = "darkblue", alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "darkred") +
+  labs(x = "Fitted Values", y = "Residuals") +
+  ggtitle("Residuals vs. Fitted Values selfConcept") +
+  theme_minimal()
+
+
+```
+
+
+*support*
+
+
+```{r resplotSU, message=FALSE, warning=FALSE}
+
+effect_su <- glm(intention ~ support, 
+                 data = data, 
+                 family = binomial)
+
+ggplot(data = data,
+       aes(x = fitted(effect_su),
+           y = resid(effect_su))) +
+  geom_point(color = "darkblue", alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "darkred") +
+  labs(x = "Fitted Values", y = "Residuals") +
+  ggtitle("Residuals vs. Fitted Values support") +
+  theme_minimal()
+
+
+```
+
+
+## 5 Options for Modeling
+
+Options A and B address the issue of *heteroskedasticity*, 
+while C, D, and E are methods to compensate for the *nonlinear effect*. 
+
+Since solutions for both issues must be found, the best combination of these methods should be determined.
+
+
+### 5.1 Handling Heteroskedasticity
+
+
+#### 5.1.1 Option A
+
+
+*Log-transformation of the outcome variable*
+
+involves taking the natural logarithm of the values, which helps stabilize variance across different value ranges and thus mitigates the problem of heteroskedasticity. This transformation makes the distribution more symmetric and reduces variance in the data, leading to more reliable and robust model estimations.
+
+
+```{r logTrans, message=FALSE, warning=FALSE}
+
+data$log_intention <- log(data$intention + 1)  
+option_A <- glm(log_intention ~ selfAssessment + 
+                   selfConcept + support + 
+                   age + parentsEducation + studySubject,
+                 data = data, family = gaussian)
+
+summary(option_A)
+
+```
+
+
+#### 5.1.2 Option B
+
+*Robust Standard Errors*
+
+are used to account for heteroscedasticity in a regression model. When heteroscedasticity is present, the usual standard errors may be biased. Robust standard errors correct for this, providing more reliable estimates of the coefficients' standard errors.
+
+HC1: Heteroskedasticity-Consistent Standard Errors, Version 1
+
+```{r sd-robust, message=FALSE, warning=FALSE}
+
+option_B <- glm(intention ~ selfAssessment + 
+    selfConcept + support, 
+    data = data, family = binomial)
+
+robust_se <- lmtest::coeftest(option_B,
+            vcov = sandwich::vcovHC(model, type = "HC1"))
+
+texreg::screenreg(list(option_B), 
+          override.se = list(robust_se))
+
+```
+
+
+#### 5.1.3 Comparison
+
+
+```{r compAB, message=FALSE, warning=FALSE}
+
+hoslem1 <- hoslem.test(
+           data$log_intention, fitted(option_A))
+hoslem2 <- hoslem.test(data$intention, fitted(option_B))
+
+aic1 <- AIC(option_A)
+aic2 <- AIC(option_B)
+
+logLik1 <- logLik(option_A)
+logLik2 <- logLik(option_B)
+
+
+results <- data.frame(
+  Option = c("A", "B"),
+  Model = c("log Transformation",
+            "Robust Standard Errors"),
+  `Hoslem X²` = c(hoslem1$statistic, hoslem2$statistic),
+  `Hoslem p-value` = c(format.pval(hoslem1$p.value),
+                       format.pval(hoslem2$p.value)),
+  AIC = c(aic1, aic2),
+  `Log-Likelihood` = c(logLik1, logLik2))
+
+results  |> 
+  kable("html", escape = FALSE, 
+  align = "r", 
+  caption = "Comparison of Model Performance")  |> 
+  kable_styling(full_width = T, 
+  bootstrap_options = c("striped", "hover", "condensed", "responsive")) 
+
+```
+
+
+
+### 5.2 Handling Nonlinear Effects
+
+#### 5.2.1 Option C 
+
+*Modeling Interactions*
+
+compensates for nonlinear effects by capturing the combined influence of two or more variables on the outcome, which can reveal complex, nonlinear relationships that a simple additive model might miss.
+
+
+```{r interactions, message=FALSE, warning=FALSE}
+
+
+option_C <- glm(
+  intention ~ selfAssessment * selfConcept + 
+              selfAssessment * support + 
+              selfConcept * support,
+              data = data, family = binomial)
+
+summary(option_C)
+
+
+```
+
+
+#### 5.2.2 Option D
+
+*Polynomial Transformation*
+
+compensates for nonlinear effects by allowing the model to include higher-degree terms of predictor variables, which can capture complex, curved relationships between predictors and the outcome that linear terms alone cannot represent.
+
+```{r transf-model, message=FALSE, warning=FALSE}
+
+
+option_D <- glm(
+  intention ~ poly(selfAssessment, 2) + 
+    selfConcept + support, 
+    data = data, family = binomial)
+
+summary(option_D)
+
+
+```
+
+
+#### 5.2.3 Option E 
+
+*Implementing Splines*
+
+compensates for nonlinear effects by using piecewise polynomial functions to model the relationship between variables, allowing for flexibility in capturing complex, nonlinear patterns in the data.
+
+```{r splines, message=FALSE, warning=FALSE}
+
+
+option_E <- mgcv::gam(
+  intention ~ s(selfAssessment) + 
+    selfConcept + support, 
+  data = data, family = binomial)
+
+summary(option_E)
+
+
+```
+
+
+#### 5.2.4 Comparison
+
+```{r compCDE, message=FALSE, warning=FALSE}
+
+hoslem3 <- hoslem.test(data$intention, fitted(option_C))
+hoslem4 <- hoslem.test(data$intention, fitted(option_D))
+hoslem5 <- hoslem.test(data$intention, fitted(option_E))
+
+
+aic3 <- AIC(option_C)
+aic4 <- AIC(option_D)
+aic5 <- AIC(option_E)
+
+
+logLik3 <- logLik(option_C)
+logLik4 <- logLik(option_D)
+logLik5 <- logLik(option_E)
+
+
+results <- data.frame(
+  Option = c("C", "D", "E"),
+  Model = c("Interactions", 
+            "Polynomial Transformation", 
+            "Splines"),
+  `Hoslem X²` = c(
+          hoslem3$statistic, hoslem4$statistic,
+          hoslem5$statistic),
+  `Hoslem p-value` = c(format.pval(hoslem3$p.value),
+                       format.pval(hoslem4$p.value),
+                       format.pval(hoslem5$p.value)),
+  AIC = c(aic3, aic4, aic5),
+  `Log-Likelihood` = c(logLik3, logLik4, logLik5))
+
+results  |> 
+  kable("html", escape = FALSE, 
+  align = "r", 
+  caption = "Comparison of Model Performance")  |> 
+  kable_styling(full_width = T, 
+  bootstrap_options = c("striped", "hover", "condensed", "responsive")) 
+
+```
+
+
+
+### 5.3. Combinations
+
+#### 5.3.1 Option F
+
+combination of Option A and Option E:
+
+Log-transformation of the outcome variable and implementing splines
+
+```{r logSplines, message=FALSE, warning=FALSE}
+
+option_F <- mgcv::gam(
+  log_intention ~ s(selfAssessment) + 
+    selfConcept + support, 
+  data = data, family = binomial)
+
+summary(option_F)
+
+
+```
+
+
+#### 5.3.2 Option G
+
+combination of Option B and Option E:
+
+using robust standard errors and implementing splines
+
+```{r g_SE, message=FALSE, warning=FALSE}
+
+option_G <- mgcv::gam(
+  intention ~ s(selfAssessment) + 
+    selfConcept + support +
+    age + parentsEducation + study, 
+  data = data, family = binomial)
+
+robust_se_G <- sqrt(diag(vcovHC(option_G,
+                                type = "HC1")))
+
+texreg::screenreg(list(option_G), 
+          override.se = list(robust_se_G))
+
+```
+
+
+### 5.4. Comparison of Model Performance
+
+*Hosmer-Lemeshow-Test*
+
+Hoslem values 
+evaluate the fit of a model to the data:
+
+*Hoslem X²*:
+-   Test statistic that measures the quality of fit to the data.
+-   Rule: The lower, the better.
+
+*Hoslem p-value*:
+-   Good fit means no significant deviance.
+-   Rule: The higher (greater than 0.05), the better.
+
+
+AIC and Log-Likelihood
+assess the explanatory power of a model and how well it describes the data:
+
+*AIC* (Akaike Information Criterion):
+-   Measures the quality of fit of a statistical model.
+-   Rule: The lower, the better.
+
+*log.Likelihood*:
+-   Measures the quality of fit of a statistical model.
+-   Rule: The higher, the better.
+
+
+```{r comparison, message=FALSE, warning=FALSE}
+
+
+hoslem6 <- hoslem.test(
+           data$log_intention, fitted(option_F))
+hoslem7 <- hoslem.test(data$intention, fitted(option_G))
+
+aic6 <- AIC(option_F)
+aic7 <- AIC(option_G)
+
+logLik6 <- logLik(option_F)
+logLik7 <- logLik(option_G)
+
+
+results <- data.frame(
+  Option = c("F = A + E", "G = B + E"),
+  Model = c("log-Transf. + Splines",
+            "Robust SE + Splines"),
+  `Hoslem X²` = c(hoslem6$statistic,
+                  hoslem7$statistic),
+  `Hoslem p-value` = c(format.pval(hoslem6$p.value),
+                       format.pval(hoslem7$p.value)),
+  AIC = c(aic6, aic7),
+  `Log-Likelihood` = c(logLik6, logLik7))
+
+results  |> 
+  kable("html", escape = FALSE, 
+  align = "r", 
+  caption = "Comparison of Model Performance")  |> 
+  kable_styling(full_width = T, 
+  bootstrap_options = c("striped", "hover", "condensed", "responsive")) 
+
+
+```
+
+
+Model G is the best model because although x² shows more deviations than Model F, these are not statistically significant since p > 0.05. It demonstrates a better fit, is less complex than Model F (lower AIC), and describes the data better due to the higher log-likelihood.
+
+
+## 6 Regression GAM
+
+
+### 6.1. Null Model
+
+```{r null-Model, message=FALSE, warning=FALSE}
+
+null_model <- glm(intention ~ 1,
+                 data = data,
+                 family = binomial)
+
+
+stargazer(null_model, type = "text",
+          ci = TRUE, ci.level = 0.95,
+          single.row = TRUE,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          header = F,
+          title = "Null Model, Split 1",
+          dep.var.labels = "Master- Intention")
+
+# Log-Likelihood
+ll_model <- null_model
+ll_null <- logLik(null_model)
+ll_null
+
+```
+
+### 6.2 Model with Predictors
+
+
+```{r pred-model, message=FALSE, warning=FALSE}
+
+predictor_model <- mgcv::gam(
+  intention ~ s(selfAssessment) + 
+    selfConcept + support, 
+  data = data, 
+  family = binomial
+)
+
+# calculate robust standard errors
+
+robust_se_pM <- lmtest::coeftest(predictor_model, 
+                   vcov = sandwich::vcovHC(
+                    predictor_model, type = "HC1"))
+#robust_se_pM
+
+# Log-Likelihood
+ll_Pmodel <- logLik(predictor_model)
+
+# McFadden-R²
+mcfadden_r2 <- 1 - (as.numeric(ll_Pmodel) / as.numeric(ll_null))
+mcfadden_r2
+
+texreg::screenreg(list(predictor_model), 
+          override.se = list(robust_se_pM))
+
+
+```
+
+
+
+### 6.3 Full Model
+
+```{r full-model, message=FALSE, warning=FALSE}
+
+full_model <- mgcv::gam(
+  intention ~ s(selfAssessment) + 
+    selfConcept + support +
+    age + parentsEducation + study, 
+  data = data, family = binomial)
+
+# calculate robust standard errors
+
+robust_se_fM <- sqrt(diag(vcovHC(full_model, type = "HC1")))
+#robust_se_pM
+
+#length(robust_se_fM)
+#length(coef(full_model))
+
+# Log-Likelihood
+ll_fmodel <- logLik(full_model)
+
+# McFadden-R²
+mcfadden_r2 <- 1 - (as.numeric(ll_fmodel) / as.numeric(ll_null))
+#mcfadden_r2
+
+texreg::screenreg(list(full_model), 
+          override.se = list(robust_se_pM))
+
+
+```
+
+
+### 6.4 Comparison
+
+```{r compModels, message=FALSE, warning=FALSE}
+
+texreg::screenreg(list(null_model, predictor_model,
+                       full_model), 
+          override.se = list(robust_se_pM))
+
+```
+
+Table
+
+```{r logLik-aic-bic, message=FALSE, warning=FALSE}
+
+loglik_AIC_BIC <- function(model) {
+  data.frame(
+    Log_Likelihood = as.numeric(logLik(model)),
+    AIC = AIC(model),
+    BIC = BIC(model),
+    stringsAsFactors = FALSE
+  )
+}
+
+null_loglik <- loglik_AIC_BIC(null_model)
+predictor_loglik <- loglik_AIC_BIC(predictor_model)
+full_loglik <- loglik_AIC_BIC(full_model)
+
+# Likelihoods 
+
+likelihoods <- rbind(
+  cbind(Model = "Null Model", null_loglik),
+  cbind(Model = "Predictor Model", predictor_loglik),
+  cbind(Model = "Full Model", full_loglik)
+)
+
+likelihoods_kable <- likelihoods  |> 
+  kableExtra::kable()  |> 
+  kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"))
+
+likelihoods_kable
+
+
+
+```
+
+
+### 6.5 Log Odds and Max Likelihoods
+
+```{r calc-CI, message=FALSE, warning=FALSE}
+
+my_model <- mgcv::gam(
+  intention ~ s(selfAssessment) + 
+    selfConcept + support +
+    age + parentsEducation + study, 
+  data = data, family = binomial)
+
+coef_estimates <- coef(my_model)
+se_estimates <- summary(my_model)$se
+
+conf_intervals <- data.frame(
+  term = names(coef_estimates),
+  estimate = coef_estimates,
+  std.error = se_estimates,
+  CI.Lower = coef_estimates - 1.96 * se_estimates,
+  CI.Upper = coef_estimates + 1.96 * se_estimates
+)
+
+# Odds Ratios
+conf_intervals <- conf_intervals  |> 
+  mutate(OddsRatio = exp(estimate))
+
+conf_intervals  |> 
+  select(term, estimate,  OddsRatio, CI.Lower, CI.Upper)  |> 
+  kableExtra::kable(
+    format = "html", 
+    caption = "Coefficient Estimates, 
+    Odds Ratios, Confidence Intervals") |> 
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"), 
+    full_width = F)  |> 
+  row_spec(0, bold = TRUE)
+
+
+```
+
+
+### 6.6. Robustness Check
+
+#### 6.6.1 Probit-GAM-Model
+
+A probit model uses a normal distribution instead of the logit function to model probability. If systematic patterns in the residuals are due to the distribution assumptions of the logit model, a probit link can improve the fit. A probit model can be useful for a robustness check, as it provides an alternative approach to examining the same data and ensuring that the results are consistent across different model specifications.
+
+
+```{r probitGAM-Modell, message=FALSE, warning=FALSE}
+
+
+probit_model <- mgcv::gam(intention ~ s(selfAssessment) + 
+                          selfConcept + support + 
+                          age + parentsEducation + study, 
+                          data = data, 
+                          family = binomial(link = "probit"))
+
+robust_se_pM_probit <- sqrt(diag(vcovHC(probit_model, type = "HC1")))
+
+texreg::screenreg(list(probit_model), 
+                  override.se = list(robust_se_pM_probit),
+                  caption = "Probit-GAM Model")
+
+
+```
+
+
+#### 6.6.2 Factor Model
+
+In this model, the confounder age is used as a categorical variable rather than a dummy variable. This approach allows for a more detailed exploration of age effects by considering different age categories and their potential varying impacts. Such a model provides a robustness check against models that might oversimplify the relationship by treating age as a continuous or binary variable, thereby ensuring the results are more reflective of the true underlying patterns in the data.
+
+```{r hierM, message=FALSE, warning=FALSE}
+
+attach(data)
+frq(age_cat)
+
+data$age_factor <- factor(data$age_cat, 
+                          levels = c(1, 2, 3, 4, 5), 
+                          labels = c("19 years and younger", 
+                                     "20 - 22 years", 
+                                     "23 - 25 years", 
+                                     "26 - 30 years", 
+                                     "31 years and older"))
+
+factor_model <- mgcv::gam(
+  intention ~ s(selfAssessment) + 
+    selfConcept + 
+    support + 
+    factor(age_factor) + parentsEducation + study,  
+  data = data, 
+  family = binomial(link = "logit"))
+
+robust_se_factor <- coeftest(factor_model,
+    vcov = vcovHC(factor_model, type = "HC1"))
+
+texreg::screenreg(list(factor_model), 
+                  override.se = list(robust_se_factor),
+                  caption = "Factor Model")
+
+
+```
+
+#### 6.6.3 Comparison
+
+```{r compareModels, message=FALSE, warning=FALSE}
+
+aic_full <- AIC(full_model)
+bic_full <- BIC(full_model)
+
+aic_hierarchical <- AIC(factor_model)
+bic_hierarchical <- BIC(factor_model)
+
+aic_probit <- AIC(probit_model)
+bic_probit <- BIC(probit_model)
+
+
+results <- data.frame(
+  Model = c("Full Model", "Hierarchical Model", "Probit Model"),
+  AIC = c(AIC(full_model), AIC(factor_model),
+          AIC(probit_model)),
+  BIC = c(BIC(full_model), BIC(factor_model),
+          BIC(probit_model)),
+  Deviance_Explained = c(
+    summary(full_model)$dev.expl,
+    summary(factor_model)$dev.expl,
+    summary(probit_model)$dev.expl),
+  Deviance = c(
+    deviance(full_model),
+    deviance(factor_model),
+    deviance(probit_model)),
+  Pseudo_R2 = c(
+    1 - deviance(full_model) / deviance(null_model),
+    1 - deviance(factor_model) / deviance(null_model),
+    1 - deviance(probit_model) / deviance(null_model)))
+
+results |> 
+  kableExtra::kable("html", caption = "Model Comparison")  |> 
+  kable_styling(full_width = F, position = "center")
+
+
+```
+
+
+All models give very similar results, which suggests that the robustness analysis has basically passed. However, the Hierarchical Model has slightly better fit values (AIC, Deviance Explained) and a small improvement in model quality, making it slightly preferred over the Full Model. There don't appear to be any significant differences that would suggest the Full Model fails the robustness checks.
+
+## 7 Visualisation
+
+
+### 7.1 n = 20.891
+
+```{r plotAllData, fig.width=10, message=FALSE, warning=FALSE}
+
+plotAllData <- ggplot(data = data) +
+  # selfAssessment: circle
+  geom_jitter(aes(
+    x = selfAssessment, y = intention,
+    shape = "selfAssessment"),
+    alpha = 0.8, width = 1.2, height = 0.4,
+    color = "grey") +
+  # selfConcept: triangle
+  geom_jitter(aes(
+    x = selfConcept, y = intention,
+    shape = "selfConcept"),
+    alpha = 0.8, width = 1.2, height = 0.4,
+    color = "grey") +
+  # support: square
+  geom_jitter(aes(
+    x = support, y = intention, shape = "Support"),
+    alpha = 1, width = 1.2, height = 0.4,
+    color = "grey") +
+  # support regression line
+  geom_smooth(aes(
+    x = support, y = intention, color = "Support"),
+    method = "glm",
+    method.args = list(family = "binomial"),
+    fill = "lightblue",
+    linewidth = 0.5, linetype = "dashed",
+    fullrange = TRUE) +
+  # selfAssessment
+  geom_smooth(aes(
+    x = selfAssessment, y = intention,
+    color = "selfAssessment"),
+    method = "glm",
+    method.args = list(family = "binomial"),
+    fill = "lightgreen",
+    linewidth = 0.5, linetype = "dashed",
+    fullrange = TRUE) +
+  # selfConcept
+  geom_smooth(aes(
+    x = selfConcept, y = intention,
+    color = "selfConcept"),
+    method = "glm",
+    method.args = list(family = "binomial"),
+    fill = "lightcoral",
+    linewidth = 0.5, linetype = "dashed",
+    fullrange = TRUE) +
+
+  ylab("Master- Intention") +
+  xlab("Response Categories") +
+  labs(caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  scale_color_manual(name = "predictors",
+        values = c("Support" = "darkblue",
+                   "selfAssessment" = "darkgreen",
+                   "selfConcept" = "darkred"),
+        guide = guide_legend(order = 1)) +
+  scale_shape_manual(name = "Symbols",
+        values = c("Support" = 0,
+                   "selfAssessment" = 1,
+                   "selfConcept" = 2),
+        guide = guide_legend(order = 2,
+                override.aes = list(color = "black"))) +
+  scale_y_continuous(breaks = c(0, 0.5, 1),
+                     labels = c("No", "", "Yes")) +
+  scale_x_continuous(breaks = c(0, 1, 2, 3, 4, 5, 6),
+                     labels = c("1 = low value", "", "2",
+                                "", "4","high value = 5","")) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.text = element_text(size = 10))
+
+plotAllData
+
+
+```
+
+
+### 7.2 sample, n = 2000
+
+```{r samplePlot, fig.width=10, message=FALSE, warning=FALSE}
+
+set.seed(2601)
+sample_data <- sample_n(data, 2000)
+
+sampleplot <- ggplot(data = sample_data) +
+
+  # selfAssessment: circle
+  geom_jitter(aes(
+    x = selfAssessment, y = intention,
+    shape = "selfAssessment"),
+    alpha = 0.8, width = 1.2, height = 0.4,
+    color = "grey") +
+  # selfConcept: triangle
+  geom_jitter(aes(
+    x = selfConcept, y = intention,
+    shape = "selfConcept"),
+    alpha = 0.8, width = 1.2, height = 0.4,
+    color = "grey") +
+  # support: square
+  geom_jitter(aes(
+    x = support, y = intention, shape = "Support"),
+    alpha = 1, width = 1.2, height = 0.4,
+    color = "grey") +
+  # support regression line
+  geom_smooth(aes(
+    x = support, y = intention, color = "Support"),
+    method = "glm",
+    method.args = list(family = "binomial"),
+    fill = "lightblue",
+    linewidth = 0.5, linetype = "dashed",
+    fullrange = TRUE) +
+  # selfAssessment
+  geom_smooth(aes(
+    x = selfAssessment, y = intention,
+    color = "selfAssessment"),
+    method = "glm",
+    method.args = list(family = "binomial"),
+    fill = "lightgreen",
+    linewidth = 0.5, linetype = "dashed",
+    fullrange = TRUE) +
+  # selfConcept
+  geom_smooth(aes(
+    x = selfConcept, y = intention,
+    color = "selfConcept"),
+    method = "glm",
+    method.args = list(family = "binomial"),
+    fill = "lightcoral",
+    linewidth = 0.5, linetype = "dashed",
+    fullrange = TRUE) +
+
+  ylab("Master- Intention") +
+  xlab("Response Categories") +
+  labs(caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  scale_color_manual(name = "predictors",
+        values = c("Support" = "darkblue",
+                   "selfAssessment" = "darkgreen",
+                   "selfConcept" = "darkred"),
+        guide = guide_legend(order = 1)) +
+  scale_shape_manual(name = "Symbols",
+        values = c("Support" = 0,
+                   "selfAssessment" = 1,
+                   "selfConcept" = 2),
+        guide = guide_legend(order = 2,
+                override.aes = list(color = "black"))) +
+  scale_y_continuous(breaks = c(0, 0.5, 1),
+        labels = c("No", "", "Yes")) +
+  scale_x_continuous(breaks = c(0, 1, 2, 3, 4, 5, 6),
+         labels = c("1 = low value", "", "2",
+                     "", "4","high value = 5","")) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.text = element_text(size = 10))
+
+
+sampleplot
+
+
+```
+
+
+
+## 8 Stratification
+
+
+### 8.1 Predictor Distributions
+
+
+```{r distPred, message=FALSE, warning=FALSE}
+
+descriptive_stats <- data |> 
+  group_by(intention) |> 
+  summarise(
+    Mean_selfAss = mean(selfAssessment),
+    SD_selfAssess = sd(selfAssessment),
+    Mean_selfConc = mean(selfConcept),
+    SD_selfConc = sd(selfConcept),
+    Mean_support = mean(support),
+    SD_support = sd(support),
+    Count = n())
+  
+descriptive_stats
+
+
+```
+
+
+####  Density Plots
+
+```{r dens, message=FALSE, warning=FALSE}
+
+# selfAssessment
+ggplot(data, aes(
+  x = selfAssessment, 
+  fill = as.factor(intention))) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Density selfAssessment to Intention",
+    x = "selfAssessment",
+    y = "Density",
+    fill = "Intention"
+  ) +
+  labs(caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal()
+
+#  selfConcept
+ggplot(data, aes(
+  x = selfConcept, 
+  fill = as.factor(intention))) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Density selfConcept to Intention",
+    x = "selfConcept",
+    y = "Density",
+    fill = "Intention"
+  ) +
+  labs(caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal()
+
+# support
+ggplot(data, aes(
+  x = support, 
+  fill = as.factor(intention))) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Density support to Intention",
+    x = "support",
+    y = "Density",
+    fill = "Intention"
+  ) +
+  labs(caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal()
+
+
+```
+
+
+
+### 8.2 Split Confounder Age
+
+
+```{r distAge, message=FALSE, warning=FALSE}
+
+attach(data)
+frq(age_cat, show.na = FALSE)
+
+```
+
+#### Density Plot
+
+```{r densAge, message=FALSE, warning=FALSE}
+
+ggplot(data, aes(x = as.numeric(age_cat), fill = factor(intention))) +
+  geom_density(alpha = 0.5) +
+  labs(
+    x = "Age Categories",
+    y = "Density",
+    fill = "Master Intention",
+    title = "Density Age Categories to Master-Intention"
+  ) +
+  scale_fill_manual(values = c("#fc8d62", "#66c2a5"), 
+                    labels = c("No", "Yes")) +
+  scale_x_continuous(
+    breaks = 1:5,
+    labels = c("≤19", "20-22", "23-25", "26-30", "≥31")
+  ) +
+  labs(caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal()
+
+
+
+```
+
+
+#### Age Categories
+
+```{r tableAgeCat, message=FALSE, warning=FALSE}
+
+ageCat_table <- table(data$age_cat)
+ageCat_prop <- prop.table(ageCat_table) * 100
+ageCat_cum_prop <- cumsum(ageCat_prop)
+
+ageCat_freq <- data.frame(
+  Value = as.numeric(names(ageCat_table)),
+  Label = c("19 years and younger",
+            "20 - 22 years",
+            "23 - 25 years",
+            "26 - 30 years",
+            "31 years and older"),
+  N = as.vector(ageCat_table),
+  Raw_Percent = round(as.numeric(ageCat_prop), 2),
+  Valid_Percent = round(as.numeric(ageCat_prop), 2),
+  Cumulative_Percent = round(as.numeric(ageCat_cum_prop), 2))
+
+
+
+kableExtra::kable(ageCat_freq, format = "html", 
+      col.names = c("Value", "Label", "N", "Raw %", "Valid %", "Cum. %"), 
+      caption = "Age Categories")  |> 
+  kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  #column_spec(1, bold = TRUE) |>  
+  #column_spec(3:6, color = "blue") |>  
+  add_header_above(c(" ", "Frequencies Age Categories" = 5))
+
+
+
+```
+
+
+
+### 8.3 Chi² Test
+
+```{r tableAgeInt, message=FALSE, warning=FALSE}
+
+
+tableAgeInt <- table(data$age_cat, data$intention)
+tableAgeInt
+chi_square_test <- chisq.test(tableAgeInt)
+chi_square_test
+
+
+```
+
+
+## 9 Regression Factor Model
+
+
+
+```{r glm_ageCat, message=FALSE, warning=FALSE}
+
+glm_ageCat <- glm(
+  intention ~ selfAssessment + selfConcept + support + 
+    factor(age_cat) + parentsEducation + study, 
+  family = binomial, 
+  data = data)
+
+robust_se_ageCat <- lmtest::coeftest(
+  glm_ageCat, 
+  vcov = sandwich::vcovHC(
+    glm_ageCat, type = "HC1"))
+
+texreg::screenreg(
+  list(glm_ageCat), 
+  override.se = list(
+    robust_se_ageCat[, "Std. Error"]),
+  override.pvalues = list(
+    robust_se_ageCat[, "Pr(>|z|)"]))
+
+
+
+```
+
+
+
+## 10 separate Regressions GLM
+
+Stratification to sub categories
+
+```{r subsetAge, message=FALSE, warning=FALSE}
+
+data_age_cat1 <- subset(data, age_cat == 1)
+data_age_cat2 <- subset(data, age_cat == 2)
+data_age_cat3 <- subset(data, age_cat == 3)
+data_age_cat4 <- subset(data, age_cat == 4)
+data_age_cat5 <- subset(data, age_cat == 5)
+
+
+```
+
+### 10.1 Separate Models
+
+category 1 
+
+```{r modelCat1, message=FALSE, warning=FALSE}
+
+model_age_cat1 <- glm(intention ~ selfAssessment +
+                        selfConcept + support +
+                        parentsEducation + study,
+                      data = data_age_cat1, family = binomial)
+
+robust_se_age1 <- lmtest::coeftest(model_age_cat1, 
+  vcov = sandwich::vcovHC(model_age_cat1, type = "HC1"))
+
+z_values <- robust_se_age1[, "Estimate"] / robust_se_age1[, "Std. Error"]
+
+p_values <- 2 * (1 - pnorm(abs(z_values)))
+
+# texreg::screenreg(
+#   list(model_age_cat1), 
+#   override.se = list(
+#     robust_se_age1[, "Std. Error"]),
+#   override.pvalues = list(
+#     robust_se_age1[, "Pr(>|z|)"]),
+#   custom.model.names = c("Age <= 19 years"))
+
+
+```
+
+
+category 2
+
+```{r modelCat2, message=FALSE, warning=FALSE}
+
+model_age_cat2 <- glm(
+  intention ~ selfAssessment +
+    selfConcept + support +
+    parentsEducation + study,
+  data = data_age_cat2, 
+  family = binomial)
+
+robust_se_age2 <- lmtest::coeftest(model_age_cat2, 
+  vcov = sandwich::vcovHC(model_age_cat2, type = "HC1"))
+
+#z_values <- robust_se_age2[, "Estimate"] / robust_se_age2[, "Std. Error"]
+
+#p_values <- 2 * (1 - pnorm(abs(z_values)))
+
+
+# texreg::screenreg(
+#   list(model_age_cat2), 
+#   override.se = list(
+#     robust_se_age2[, "Std. Error"]),
+#   override.pvalues = list(
+#     robust_se_age2[, "Pr(>|z|)"]),
+#   custom.model.names = c("Age 20 to 22 years"))
+
+```
+
+
+category 3 
+
+```{r modelCat3, message=FALSE, warning=FALSE}
+
+model_age_cat3 <- glm(
+  intention ~ selfAssessment +
+    selfConcept + support +
+    parentsEducation + study,
+  data = data_age_cat3, 
+  family = binomial)
+
+robust_se_age3 <- lmtest::coeftest(model_age_cat3, 
+  vcov = sandwich::vcovHC(model_age_cat3, type = "HC1"))
+
+#z_values <- robust_se_age3[, "Estimate"] / robust_se_age3[, "Std. Error"]
+
+#p_values <- 2 * (1 - pnorm(abs(z_values)))
+
+
+# texreg::screenreg(
+#   list(model_age_cat3), 
+#   override.se = list(
+#     robust_se_age3[, "Std. Error"]),
+#   override.pvalues = list(
+#     robust_se_age3[, "Pr(>|z|)"]),
+#   custom.model.names = c("Age 23 to 25 years"))
+
+
+```
+
+category 4
+
+```{r modelCat4, message=FALSE, warning=FALSE}
+
+model_age_cat4 <- glm(
+  intention ~ selfAssessment +
+    selfConcept + support +
+    parentsEducation + study,
+  data = data_age_cat4, 
+  family = binomial)
+
+robust_se_age4 <- lmtest::coeftest(model_age_cat4, 
+  vcov = sandwich::vcovHC(model_age_cat4, type = "HC1"))
+
+#z_values <- robust_se_age3[, "Estimate"] / robust_se_age3[, "Std. Error"]
+
+#p_values <- 2 * (1 - pnorm(abs(z_values)))
+
+
+# texreg::screenreg(
+#   list(model_age_cat4), 
+#   override.se = list(
+#     robust_se_age4[, "Std. Error"]),
+#   override.pvalues = list(
+#     robust_se_age4[, "Pr(>|z|)"]),
+#   custom.model.names = c("Age 26 to 30 years")
+#   )
+
+
+
+```
+
+
+category 5
+
+```{r modelCat5, message=FALSE, warning=FALSE}
+
+model_age_cat5 <- glm(
+  intention ~ selfAssessment +
+    selfConcept + support +
+    parentsEducation + study,
+  data = data_age_cat5, 
+  family = binomial)
+
+robust_se_age5 <- lmtest::coeftest(model_age_cat5, 
+  vcov = sandwich::vcovHC(model_age_cat5, type = "HC1"))
+
+#z_values <- robust_se_age3[, "Estimate"] / robust_se_age3[, "Std. Error"]
+
+#p_values <- 2 * (1 - pnorm(abs(z_values)))
+
+
+# texreg::screenreg(
+#   list(model_age_cat5), 
+#   override.se = list(
+#     robust_se_age5[, "Std. Error"]),
+#   override.pvalues = list(
+#     robust_se_age5[, "Pr(>|z|)"]),
+#   custom.model.names = c("Age >= 31 years"))
+
+
+
+```
+
+
+### 10.2 Comparison
+
+```{r compAgeModels, message=FALSE, warning=FALSE}
+
+
+outputM <- texreg::screenreg(
+  list(model_age_cat1, model_age_cat2, model_age_cat3, model_age_cat4, model_age_cat5),
+  override.se = list(robust_se_age1[, "Std. Error"], robust_se_age2[, "Std. Error"], robust_se_age3[, "Std. Error"], robust_se_age4[, "Std. Error"], robust_se_age5[, "Std. Error"]),
+  override.pvalues = list(robust_se_age1[, "Pr(>|z|)"], robust_se_age2[, "Pr(>|z|)"], robust_se_age3[, "Pr(>|z|)"], robust_se_age4[, "Pr(>|z|)"], robust_se_age5[, "Pr(>|z|)"]),
+  custom.model.names = c("Age <= 19 years", "Age 20 to 22 years", "Age 23 to 25 years", "Age 26 to 30 years", "Age >= 31 years")
+)
+
+outputM
+
+write.table(outputM, "regrOutput.txt")
+
+```
+
+
+### 10.3 McFadden R²
+
+```{r mcFadden, message=FALSE, warning=FALSE}
+
+# Funktion zur Berechnung des McFadden R²
+mcfadden_r2 <- function(model) {
+  ll_full <- logLik(model)
+  ll_null <- logLik(update(model, . ~ 1))
+  return(1 - as.numeric(ll_full / ll_null))
+}
+
+r2_age_cat1 <- mcfadden_r2(model_age_cat1)
+r2_age_cat2 <- mcfadden_r2(model_age_cat2)
+r2_age_cat3 <- mcfadden_r2(model_age_cat3)
+r2_age_cat4 <- mcfadden_r2(model_age_cat4)
+r2_age_cat5 <- mcfadden_r2(model_age_cat5)
+
+
+cat("McFadden R² Model 1 (Age <= 19 years):", r2_age_cat1, "\n") 
+
+cat("McFadden R² Model 2 (Age 20 to 22 years):", r2_age_cat2, "\n") 
+
+cat("McFadden R² Model 3 (Age 23 to 25 years):", r2_age_cat3, "\n") 
+
+cat("McFadden R² Model 4 (Age 26 to 30 years):", r2_age_cat4, "\n") 
+
+cat("McFadden R² Model 5 (Age >= 31 years):", r2_age_cat5, "\n")
+
+
+```
+
+
+### 10.4 Odds Ratios
+
+
+```{r oddsAgeM, message=FALSE, warning=FALSE}
+
+
+models <- lapply(1:5, function(i) {
+  glm(intention ~ selfAssessment + selfConcept + support +
+        parentsEducation + study, 
+      data = subset(data, age_cat == i), family = binomial)
+})
+
+
+odds_ratios_with_ci <- lapply(models, function(model) {
+  exp(cbind(OR = coef(model), confint(model)))
+})
+
+results_list <- lapply(1:5, function(i) {
+  data.frame(
+    Model = paste("Cat.", i),
+    Variable = rownames(odds_ratios_with_ci[[i]]),
+    Odds_Ratio = odds_ratios_with_ci[[i]][, "OR"],
+    CI_Lower = odds_ratios_with_ci[[i]][, "2.5 %"],
+    CI_Upper = odds_ratios_with_ci[[i]][, "97.5 %"]
+  )
+})
+
+results_df <- do.call(rbind, results_list)
+
+
+```
+
+output:
+
+
+```{r oddsTables, message=FALSE, warning=FALSE}
+
+# Cat1
+results_age_cat1 <- subset(
+  results_df, Model == "Cat. 1") |>
+  select(Variable, Odds_Ratio, CI_Lower, CI_Upper) |>
+  kable(format = "html",
+        col.names = c("Variable", "Odds Ratio", "CI Lower", "CI Upper"),
+        caption = "Odds Ratios Age <= 19 years") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE)
+results_age_cat1
+
+# Cat2
+results_age_cat2 <- subset(results_df, Model == "Cat. 2") |>
+  select(Variable, Odds_Ratio, CI_Lower, CI_Upper) |>
+  kable(format = "html",
+        col.names = c("Variable", "Odds Ratio", "CI Lower", "CI Upper"),
+        caption = "Odds Ratios Age 20 to 22 years") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE)
+results_age_cat2
+
+# Cat3
+results_age_cat3 <- subset(results_df, Model == "Cat. 3") |>
+  select(Variable, Odds_Ratio, CI_Lower, CI_Upper) |>
+  kable(format = "html",
+        col.names = c("Variable", "Odds Ratio", "CI Lower", "CI Upper"),
+        caption = "Odds Ratios Age 23 to 25 years") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE)
+results_age_cat3
+
+# Cat4
+results_age_cat4 <- subset(results_df, Model == "Cat. 4") |>
+  select(Variable, Odds_Ratio, CI_Lower, CI_Upper) |>
+  kable(format = "html",
+        col.names = c("Variable", "Odds Ratio", "CI Lower", "CI Upper"),
+        caption = "Odds Ratios Age 26 to 30 years") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE)
+results_age_cat4
+
+# Cat5
+results_age_cat5 <- subset(results_df, Model == "Cat. 5") |>
+  select(Variable, Odds_Ratio, CI_Lower, CI_Upper) |>
+  kable(format = "html",
+        col.names = c("Variable", "Odds Ratio", "CI Lower", "CI Upper"),
+        caption = "Odds Ratios Age >= 31 years") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE)
+results_age_cat5
+
+
+```
+
+### 10.5 AME's
+
+
+```{r ames, message=FALSE, warning=FALSE}
+
+display_ame_summary <- function(
+    summary_object, model_name) {
+  summary_object |> 
+    as.data.frame() |> 
+    kbl(caption = paste(
+      "AME Summary for", model_name)) |> 
+    kable_styling(bootstrap_options = c(
+      "striped", "hover", "condensed", "responsive"))
+}
+
+ame_age_cat1 <- margins::margins(model_age_cat1)
+ame_age_cat2 <- margins::margins(model_age_cat2)
+ame_age_cat3 <- margins::margins(model_age_cat3)
+ame_age_cat4 <- margins::margins(model_age_cat4)
+ame_age_cat5 <- margins::margins(model_age_cat5)
+
+
+# summary(ame_age_cat1)
+# summary(ame_age_cat2)
+# summary(ame_age_cat3)
+# summary(ame_age_cat4)
+# summary(ame_age_cat5)
+
+
+display_ame_summary(
+  summary(ame_age_cat1), "Age <= 19 years")
+display_ame_summary(
+  summary(ame_age_cat2), "Age 20 to 22 years")
+display_ame_summary(
+  summary(ame_age_cat3), "Age 23 to 25 years")
+display_ame_summary(
+  summary(ame_age_cat4), "Age 26 to 30 years")
+display_ame_summary(
+  summary(ame_age_cat5), "Age >= 31 years")
+
+
+```
+
+
+## 11 Visualisation Result
+
+### 11.1 Coefficients' Plot
+
+```{r coefplotAmod, message=FALSE, warning=FALSE, fig.width=10}
+
+tidy_models <- bind_rows(
+  tidy(model_age_cat1) |> mutate(model = "<= 19 years"),
+  tidy(model_age_cat2) |> mutate(model = "20 to 22 years"),
+  tidy(model_age_cat3) |> mutate(model = "23 to 25 years"),
+  tidy(model_age_cat4) |> mutate(model = "26 to 30 years"),
+  tidy(model_age_cat5) |> mutate(model = ">= 31 years")
+)
+
+
+tidy_models <- tidy_models |>
+  filter(term %in% c("selfAssessment", "selfConcept", "support",
+                     "parentsEducation", "study"))
+
+dwplot(tidy_models, 
+       dot_args = list(aes(color = model), size = 2), whisker_args = list(aes(color = model))) + theme_minimal() + 
+  labs(
+  title = "Coefficients' Plot for different Age Categories",
+  x = "Coefficients (with 95% Confidence Intervals)", 
+  y = "Predictors", color = "Age",
+  caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") + 
+  theme(legend.position = "bottom") +
+  geom_vline(xintercept = 0, colour = "grey60", linetype = 2)
+
+
+```
+
+### 11.2 Forest Plot of Odds Ratios
+
+
+```{r forest, message=FALSE, warning=FALSE,  fig.width=10}
+
+create_tidy_or <- function(model, age_cat) {
+  tidy_model <- tidy(model) %>% mutate(model = paste("Age Cat.", age_cat))
+  conf_int <- confint(model) %>% as.data.frame() %>% 
+    rename(conf.low = `2.5 %`, conf.high = `97.5 %`) %>% 
+    mutate(term = row.names(.))
+  tidy_model <- inner_join(tidy_model, conf_int, by = "term")
+  tidy_model %>%
+    mutate(estimate = exp(estimate), 
+           conf.low = exp(conf.low),
+           conf.high = exp(conf.high)) %>%
+    filter(term %in% c("selfAssessment", "selfConcept", "support",
+                       "parentsEducation", "study"))
+}
+
+tidy_models_or <- bind_rows(
+  create_tidy_or(model_age_cat1, 1),
+  create_tidy_or(model_age_cat2, 2),
+  create_tidy_or(model_age_cat3, 3),
+  create_tidy_or(model_age_cat4, 4),
+  create_tidy_or(model_age_cat5, 5)
+)
+
+dwplot(tidy_models_or, 
+       dot_args = list(aes(color = model), size = 2),
+       whisker_args = list(aes(color = model))) +
+  theme_minimal() +
+  labs(title = "Odds Ratios for Age Categories",
+       x = "Odds Ratios (with 95% Confidence Intervals)",
+       y = "Predictors",
+       color = "Age Category",
+       caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme(legend.position = "bottom") +
+  geom_vline(xintercept = 1, colour = "grey60", linetype = 2)
+
+```
+
+
+### 11.3 Lollipop Chart Odds Ratios
+
+```{r lollipop, message=FALSE, warning=FALSE,  fig.width=10}
+
+
+ggplot(tidy_models_or, aes(x = term,
+      y = estimate, color = model)) +
+  geom_segment(aes(xend = term, yend = 1), size = 1) +
+  geom_point(size = 4) +
+  scale_y_log10() + 
+  labs(title = "Lollipop Chart of Odds Ratios for Age Categories",
+       x = "Predictors",
+       y = "Odds Ratios (log scale)",
+       color = "Age Category",
+       caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  coord_flip() +
+  geom_hline(yintercept = 1, colour = "grey60", linetype = 2)
+
+
+```
+
+### 11.4 Dot Plot Odds Ratios
+
+```{r dotplot, message=FALSE, warning=FALSE,  fig.width=10}
+
+
+ggplot(tidy_models_or, aes(x = estimate, y = term, color = model)) +
+  geom_point(size = 3) +
+  scale_x_log10() + 
+  labs(title = "Dot Plot of Odds Ratios for Age Categories",
+       x = "Odds Ratios (log scale)",
+       y = "Predictors",
+       color = "Age Category",
+       caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  geom_vline(xintercept = 1, colour = "grey60", linetype = 2)
+
+
+```
+
+
+### 11.5 Plot AME's
+
+```{r plotAME, message=FALSE, warning=FALSE,  fig.width=10}
+
+plot_ame <- function(
+    ame_summary, model_name) {
+  ame_df <- as.data.frame(ame_summary)
+  ggplot(ame_df, aes(
+    x = factor, y = AME, 
+    ymin = lower, ymax = upper)) +
+    geom_point(size = 3) +
+    geom_errorbar(width = 0.2) +
+    labs(
+      title = paste("Average Marginal Effects for", model_name),
+      x = "Predictor",
+      y = "Average Marginal Effect",
+      caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+    theme_minimal() +
+    coord_flip()  
+}
+
+
+# plot_ame(summary(ame_age_cat1), "Age <= 19 years")
+# plot_ame(summary(ame_age_cat2), "Age 20 to 22 years")
+# plot_ame(summary(ame_age_cat3), "Age 23 to 25 years")
+# plot_ame(summary(ame_age_cat4), "Age 26 to 30 years")
+# plot_ame(summary(ame_age_cat5), "Age >= 31 years")
+
+
+```
+
+
+
+```{r facetAMEs, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+
+combine_data <- function(ame_summary, model_name) {
+  ame_df <- as.data.frame(ame_summary)
+  ame_df$model_name <- model_name
+  return(ame_df)
+}
+
+ame_df_combined <- rbind(
+  combine_data(summary(ame_age_cat1), "Age <= 19 years"),
+  combine_data(summary(ame_age_cat2), "Age 20 to 22 years"),
+  combine_data(summary(ame_age_cat3), "Age 23 to 25 years"),
+  combine_data(summary(ame_age_cat4), "Age 26 to 30 years"),
+  combine_data(summary(ame_age_cat5), "Age >= 31 years")
+)
+
+ame_df_combined$factor <- factor(
+  ame_df_combined$factor, 
+  levels = c( "study", "parentsEducation", "support",
+              "selfConcept", "selfAssessment" ))
+
+
+ame_df_combined$model_name <- factor(
+  ame_df_combined$model_name, levels = c(
+  "Age <= 19 years", 
+  "Age 20 to 22 years",
+  "Age 23 to 25 years",
+  "Age 26 to 30 years",
+  "Age >= 31 years"
+))
+
+
+
+ggplot(ame_df_combined, aes(
+  x = factor, y = AME, 
+  ymin = lower, ymax = upper,
+  colour = factor)) +
+  geom_point(size = 2, position = position_dodge(width = 3)) + 
+  geom_errorbar(width = 0.2, position = position_dodge(width = 5)) + 
+  labs(
+    title = "Average Marginal Effects",
+    x = "Predictor", 
+    y = "Average Marginal Effect",
+    caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") + 
+  theme_minimal() + 
+  coord_flip() + 
+  facet_wrap(~ model_name, ncol = 1) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(size = 10))
+
+
+
+```
+
+
+
+## 12 Impact of Age
+
+### 12.1 selfAssessment
+
+
+```{r plotSelfAssAgeCat, message=FALSE, warning=FALSE}
+
+set.seed(42)
+data_sim <- tibble(
+  intention = rbinom(20891, 1, 0.5),
+  selfAssessment = runif(20891, 1, 5),
+  selfConcept = runif(20891, 1, 5),
+  support = runif(20891, 1, 5),
+  study = runif(20891, 1, 5),
+  parentsEducation = runif(20891, 1, 5),
+  age_cat = sample(1:5, 20891, 
+            replace = TRUE, 
+            prob = c(0.09, 0.47, 0.25, 0.12, 0.07)))
+
+model_formula <- intention ~ selfAssessment + 
+  selfConcept + support + as.factor(age_cat) + parentsEducation + study
+model <- glm(model_formula, data = data_sim, family = binomial)
+
+age_categories <- sort(unique(data_sim$age_cat))
+self_assessment_vals <- seq(1, 5, length.out = 5)
+predict_data <- expand.grid(
+  selfAssessment = self_assessment_vals,
+  selfConcept = 3,
+  support = 3,
+  age_cat = age_categories,
+  parentsEducation = 3,
+  study = 3)
+
+predict_data$predicted_prob <- predict(model, 
+    newdata = predict_data, type = "response")
+
+predict_data$age_cat <- factor(
+  predict_data$age_cat, levels = age_categories)
+
+
+ggplot(predict_data, aes(
+  x = selfAssessment, 
+  y = predicted_prob, 
+  color = factor(age_cat), 
+  shape = factor(age_cat), 
+  group = factor(age_cat))) +
+  geom_line() +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set1") +
+  scale_shape_manual(values = 1:5) +
+  labs(
+    title = "Predicted Probability of Master Intention by Age Category",
+    x = "selfAssessment",
+    y = "Predicted Probability",
+    color = "Age Category",
+    shape = "Age Category",
+    caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal()
+
+
+```
+
+### 12.2 selfConcept
+
+```{r plotSelfConcAgeCat, message=FALSE, warning=FALSE}
+
+predict_data_selfConcept <- expand.grid(
+  selfConcept = seq(1, 5, length.out = 5),
+  selfAssessment = 3,
+  support = 3,
+  age_cat = age_categories,
+  parentsEducation = 3,
+  study = 3)
+
+predict_data_selfConcept$predicted_prob <- predict(
+  model, newdata = predict_data_selfConcept, 
+  type = "response")
+
+predict_data_selfConcept$age_cat <- factor(
+  predict_data_selfConcept$age_cat, levels = age_categories)
+
+ggplot(predict_data_selfConcept, aes(
+  x = selfConcept, 
+  y = predicted_prob, 
+  color = factor(age_cat), 
+  shape = factor(age_cat), 
+  group = factor(age_cat))) +
+  geom_line() +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set1") +
+  scale_shape_manual(values = 1:5) +  
+  labs(
+    title = "Predicted Probability of Master Intention by Age Category",
+    x = "selfConcept",
+    y = "Predicted Probability",
+    color = "Age Category",
+    shape = "Age Category",
+    caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal()
+
+
+```
+
+### 12.3 support
+
+```{r plotSuppAgeCat, message=FALSE, warning=FALSE}
+
+predict_data_support <- expand.grid(
+  support = seq(1, 5, length.out = 5),
+  selfAssessment = 3,
+  selfConcept = 3,
+  age_cat = age_categories,
+  parentsEducation = 3,
+  study = 3)
+
+predict_data_support$predicted_prob <- predict(
+  model, newdata = predict_data_support, type = "response")
+
+predict_data_support$age_cat <- factor(
+  predict_data_support$age_cat, levels = age_categories)
+
+
+ggplot(predict_data_support, aes(
+  x = support, 
+  y = predicted_prob, 
+  color = factor(age_cat), 
+  shape = factor(age_cat), 
+  group = factor(age_cat))) +
+  geom_line() +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set1") +
+  scale_shape_manual(values = 1:5) +  
+  labs(
+    title = "Predicted Probability of Master Intention by Age Category",
+    x = "Support",
+    y = "Predicted Probability",
+    color = "Age Category",
+    shape = "Age Category",
+    caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)") +
+  theme_minimal()
+
+
+```
+
+
+
+### 12.4 Predictors under Impact of Age
+
+```{r factorACat, message=FALSE, warning=FALSE}
+
+model_with_age <- glm(
+  intention ~ selfAssessment * as.factor(age_cat) +
+              selfConcept * as.factor(age_cat) +
+              support * as.factor(age_cat) +
+              parentsEducation * as.factor(age_cat) +
+              study* as.factor(age_cat),
+              data = data_sim, 
+              family = binomial)
+
+robust_se_ageModel <- lmtest::coeftest(
+  model_with_age, 
+  vcov = sandwich::vcovHC(
+    model_with_age, type = "HC1"))
+
+# texreg::screenreg(
+#   list(model_with_age), 
+#   override.se = list(
+#     robust_se_ageModel[, "Std. Error"]),
+#   override.pvalues = list(
+#     robust_se_ageModel[, "Pr(>|z|)"]))
+
+
+```
+
+#### 12.4.1 Plot Impact of Age based on Response Categories
+
+```{r predsAge, message=FALSE, warning=FALSE, fig.width=10}
+
+model_with_age <- glm(
+  intention ~ selfAssessment * as.factor(age_cat) +
+              selfConcept * as.factor(age_cat) +
+              support * as.factor(age_cat) +
+              parentsEducation * as.factor(age_cat) +
+              study* as.factor(age_cat),
+              data = data_sim, 
+              family = binomial)
+
+
+predict_data_selfAssessment <- expand.grid(
+  selfAssessment = seq(1, 5, length.out = 5),
+  selfConcept = 3,
+  support = 3,
+  study = 3,
+  parentsEducation =3,
+  age_cat = age_categories
+)
+predict_data_selfAssessment$predicted_prob <- predict(
+  model_with_age, 
+  newdata = predict_data_selfAssessment, type = "response")
+predict_data_selfAssessment$predictor <- "selfAssessment"
+predict_data_selfAssessment$value <- predict_data_selfAssessment$selfAssessment
+
+predict_data_selfConcept <- expand.grid(
+  selfConcept = seq(1, 5, length.out = 5),
+  selfAssessment = 3,
+  support = 3,
+  study = 3,
+  parentsEducation =3,
+  age_cat = age_categories
+)
+predict_data_selfConcept$predicted_prob <- predict(model_with_age, newdata = predict_data_selfConcept, type = "response")
+predict_data_selfConcept$predictor <- "selfConcept"
+predict_data_selfConcept$value <- predict_data_selfConcept$selfConcept
+
+predict_data_support <- expand.grid(
+  support = seq(1, 5, length.out = 5),
+  selfAssessment = 3,
+  selfConcept = 3,
+  study = 3,
+  parentsEducation =3,
+  age_cat = age_categories
+)
+predict_data_support$predicted_prob <- predict(model_with_age, newdata = predict_data_support, type = "response")
+predict_data_support$predictor <- "support"
+predict_data_support$value <- predict_data_support$support
+
+predict_data_combined <- bind_rows(
+  predict_data_selfAssessment,
+  predict_data_selfConcept,
+  predict_data_support
+)
+
+ggplot(predict_data_combined, aes(
+  x = value, 
+  y = predicted_prob, 
+  color = predictor, 
+  shape = predictor, 
+  group = predictor)) +
+  geom_line() +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set1") +
+  scale_shape_manual(values = c(1, 2, 3)) +  
+  labs(
+    title = "Impact of Age on the Predicted Probability of Master Intention",
+    x = "Response Categories",
+    y = "Predicted Probability",
+    color = "Predictor",
+    shape = "Predictor",
+    caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+#### 12.4.2 Plot Impact of Age based on Age Categories
+
+
+```{r impAgePreds, message=FALSE, warning=FALSE, fig.width=10}
+
+model_with_all <- glm(
+  intention ~ selfAssessment * as.factor(age_cat) +
+                 selfConcept * as.factor(age_cat) +
+                 support * as.factor(age_cat) +
+                 parentsEducation * as.factor(age_cat) +
+                 study * as.factor(age_cat),
+                data = data_sim, family = binomial)
+
+predict_data_selfAssessment <- expand.grid(
+  selfAssessment = seq(1, 5, length.out = 5),
+  selfConcept = 3,
+  support = 3,
+  study = 3,
+  parentsEducation =3,
+  age_cat = c(1, 2, 3, 4, 5))
+
+predict_data_selfAssessment$predicted_prob <- predict(
+  model_with_all, 
+newdata = predict_data_selfAssessment, type = "response")
+predict_data_selfAssessment$predictor <- "selfAssessment"
+predict_data_selfAssessment$value <- predict_data_selfAssessment$selfAssessment
+
+
+predict_data_selfConcept <- expand.grid(
+  selfConcept = seq(1, 5, length.out = 5),
+  selfAssessment = 3,
+  support = 3,
+  study = 3,
+  parentsEducation =3,
+  age_cat = c(1, 2, 3, 4, 5))
+
+predict_data_selfConcept$predicted_prob <- predict(model_with_all, 
+  newdata = predict_data_selfConcept, type = "response")
+predict_data_selfConcept$predictor <- "selfConcept"
+predict_data_selfConcept$value <- predict_data_selfConcept$selfConcept
+
+
+predict_data_support <- expand.grid(
+  support = seq(1, 5, length.out = 5),
+  selfAssessment = 3,
+  selfConcept = 3,
+  study = 3,
+  parentsEducation =3,
+  age_cat = c(1, 2, 3, 4, 5))
+
+predict_data_support$predicted_prob <- predict(model_with_all,
+  newdata = predict_data_support, type = "response")
+predict_data_support$predictor <- "support"
+predict_data_support$value <- predict_data_support$support
+
+predict_data_combined <- bind_rows(
+  predict_data_selfAssessment,
+  predict_data_selfConcept,
+  predict_data_support)
+
+
+ggplot(predict_data_combined, aes(
+  x = as.factor(age_cat), 
+  y = predicted_prob, 
+  color = predictor, 
+  shape = predictor, 
+  group = predictor)) +
+  geom_line() +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set1") +
+  scale_shape_manual(values = c(1, 2, 3)) +  
+  scale_x_discrete(labels = c(
+    "1" = "<=19", "2" = "20-22",
+    "3" = "23-25", "4" = "26-30", "5" = ">=31")) +
+  labs(
+    title = "Predicted Probability of Master Intention by Predictor and Age Category",
+    x = "Age Categories in Years",
+    y = "Predicted Probability",
+    color = "Predictor",
+    shape = "Predictor",
+    caption = "(based on own calculations, data: DZHW:sid2021:1.0.1)"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+
+
+## 13 Impact of other Confounders
+
+### 13.1 parentsEducation
+
+```{r pEimpact, message=FALSE, warning=FALSE}
+
+data_academic <- subset(data, parentsEducation == 1)
+data_non_academic <- subset(data, parentsEducation == 0)
+
+model_academic <- glm(intention ~ selfAssessment + 
+                      selfConcept + support + study,
+                      data = data_academic,
+                      family = binomial)
+
+
+model_non_academic <- glm(intention ~ selfAssessment +
+                       selfConcept + support + study,
+                       data = data_non_academic,
+                       family = binomial)
+
+
+summary_academic <- summary(model_academic)
+summary_non_academic <- summary(model_non_academic)
+
+
+print(summary_academic)
+print(summary_non_academic)
+
+
+```
+
+
+### 13.2 subject of study
+
+```{r stImpact, message=FALSE, warning=FALSE}
+
+
+data_age_cat1_academic <- subset(data, age_cat == 1 & parentsEducation == 1)
+data_age_cat1_non_academic <- subset(
+  data, age_cat == 1 & parentsEducation == 0)
+
+model_age_cat1_academic <- glm(intention ~ selfAssessment + selfConcept + support,
+data = data_age_cat1_academic, family = binomial)
+summary(model_age_cat1_academic)
+
+model_age_cat1_non_academic <- glm(intention ~ selfAssessment + selfConcept + support,
+data = data_age_cat1_non_academic, family = binomial)
+summary(model_age_cat1_non_academic)
+
+
+```
+
+
+
+
+## 14 within-group differences
+
+
+### 14.1 Age 
+
+```{r withinAge, message=FALSE, warning=FALSE}
+
+data_outcomeSplit0 <- subset(data, intention == 0)
+data_outcomeSplit1 <- subset(data, intention == 1)
+
+# Distribution of Age within Intention = 0
+
+split0_ageCat <- table(data_outcomeSplit0$age_cat)
+split0_ageCatProp <- prop.table(split0_ageCat) * 100
+split0_ageCatCumProp <- cumsum(split0_ageCatProp)
+
+split0_ageCat_freq <- data.frame(
+  Value = as.numeric(names(split0_ageCat)),
+  Label = c("19 years and younger",
+            "20 - 22 years",
+            "23 - 25 years",
+            "26 - 30 years",
+            "31 years and older"),
+  N = as.vector(split0_ageCat),
+  Raw_Percent = round(as.numeric(split0_ageCatProp), 2),
+  Valid_Percent = round(as.numeric(split0_ageCatProp), 2),
+  Cumulative_Percent = round(as.numeric(split0_ageCatCumProp), 2))
+
+
+kableExtra::kable(split0_ageCat_freq, format = "html", 
+      col.names = c("Value", "Label", "N", "Raw %", "Valid %", "Cum. %"), 
+      caption = "Age Categories")  |> 
+  kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  add_header_above(c(" ", "Distribution of Age within Intention = No" = 5))
+
+
+# Distribution of Age within Intention = 1
+
+split1_ageCat <- table(data_outcomeSplit1$age_cat)
+split1_ageCatProp <- prop.table(split1_ageCat) * 100
+split1_ageCatCumProp <- cumsum(split1_ageCatProp)
+
+split1_ageCat_freq <- data.frame(
+  Value = as.numeric(names(split1_ageCat)),
+  Label = c("19 years and younger",
+            "20 - 22 years",
+            "23 - 25 years",
+            "26 - 30 years",
+            "31 years and older"),
+  N = as.vector(split1_ageCat),
+  Raw_Percent = round(as.numeric(split1_ageCatProp), 2),
+  Valid_Percent = round(as.numeric(split1_ageCatProp), 2),
+  Cumulative_Percent = round(as.numeric(split1_ageCatCumProp), 2))
+
+
+kableExtra::kable(split1_ageCat_freq, format = "html", 
+      col.names = c("Value", "Label", "N", "Raw %", "Valid %", "Cum. %"), 
+      caption = "Age Categories")  |> 
+  kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  add_header_above(c(" ", "Distribution of Age within Intention = Yes" = 5))
+
+
+```
+
+
+### 14.2 Parents' Education
+
+
+
+```{r withinParEduc, message=FALSE, warning=FALSE}
+
+# Distribution of parentsEducation within Intention = 0
+
+split0_parEduc <- table(data_outcomeSplit0$parentsEducation)
+
+split0_parEduc_freq <- data.frame(
+  Value = as.numeric(names(split0_parEduc)),
+  Label = c("non-academic", "academic"),
+  N = as.vector(split0_parEduc),
+  raw_perc = round((as.vector(split0_parEduc) / sum(split0_parEduc) * 100),
+                   digits = 2)
+)
+
+kableExtra::kable(split0_parEduc_freq, format = "html",
+        col.names = c("Value", "Label", "N", "%"),
+        caption = "Parents' Education") |> 
+kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  add_header_above(c(" Parents' Education within Intention = No " = 4))
+
+
+
+# Distribution of parentsEducation within Intention = 1
+
+split1_parEduc <- table(data_outcomeSplit1$parentsEducation)
+
+split1_parEduc_freq <- data.frame(
+  Value = as.numeric(names(split1_parEduc)),
+  Label = c("non-academic", "academic"),
+  N = as.vector(split1_parEduc),
+  raw_perc = round((as.vector(split1_parEduc) / sum(split1_parEduc) * 100),
+                   digits = 2)
+)
+
+kableExtra::kable(split1_parEduc_freq, format = "html",
+        col.names = c("Value", "Label", "N", "%"),
+        caption = "Parents' Education") |> 
+kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  add_header_above(c(" Parents' Education within Intention = Yes " = 4))
+
+
+```
+
+
+### 14.3 Study
+
+```{r withinStudy, message=FALSE, warning=FALSE}
+
+
+# Distribution of study within Intention = 0
+
+split0_study <- table(data_outcomeSplit0$study)
+
+split0_study_freq <- data.frame(
+  Value = as.numeric(names(split0_study)),
+  Label = c("non-technical", "technical"),
+  N = as.vector(split0_study),
+  raw_perc = round((as.vector(split0_study) / sum(split0_study) * 100),
+                   digits = 2)
+)
+
+kableExtra::kable(split0_study_freq, format = "html",
+        col.names = c("Value", "Label", "N", "%"),
+        caption = "Subject of Study") |> 
+kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  add_header_above(c(" Subject of Study within Intention = No " = 4))
+
+
+
+# Distribution of study within Intention = 1
+
+split1_study <- table(data_outcomeSplit1$study)
+
+split1_study_freq <- data.frame(
+  Value = as.numeric(names(split1_study)),
+  Label = c("non-technical", "technical"),
+  N = as.vector(split1_study),
+  raw_perc = round((as.vector(split1_study) / sum(split1_study) * 100),
+                   digits = 2)
+)
+
+kableExtra::kable(split1_study_freq, format = "html",
+        col.names = c("Value", "Label", "N", "%"),
+        caption = "Subject of Study") |> 
+kable_styling(bootstrap_options = c(
+    "striped", "hover", "condensed", "responsive"), 
+                full_width = F)  |> 
+  add_header_above(c(" Subject of Study within Intention = Yes " = 4))
+
+
+
+```
+
+
+
+
+## 15 Formulary
+
+Robust Standard Errors
+
+
+$$
+\small \hat{\sigma}_{\text{robust}}^2 = (X^T X)^{-1} X^T \hat{\Omega} X (X^T X)^{-1}
+$$
+
+
+Pseudo-R²: McFadden
+
+
+$$
+\small \text{Pseudo-}R^2 = 1 - \frac{\text{Log-Likelihood of Model}}{\text{Log-Likelihood of Null Model}}
+$$
+
+
+Regressions
+
+Null Model
+
+
+
+$$ 
+\small \text{Logit}(P(Y = 1)) = \beta_0 
+$$
+
+my Null Model
+
+$$ 
+\small \text{Logit}(\text{P(intention = 1)}) = \beta_0 
+$$
+
+
+Predictor Model
+
+
+
+$$
+\small \text{Logit}(P(Y = 1)) = \beta_0 + \beta_1 X_1 + \beta_2 X_2 + \dots + \beta_k X_k
+$$
+
+
+my Predictor Model
+
+
+$$
+\small \text{Logit}(\text{P(intention = 1)}) = \beta_0 + s(\text{selfAssessment}) + \beta_1 \cdot \text{selfConcept} + \beta_2 \cdot \text{support}
+$$
+
+
+Full Model
+
+
+
+$$
+\small \text{Logit}(P(Y = 1)) = \beta_0 + \beta_1 X_1 + \beta_2 X_2 + \dots + \beta_k X_k + \gamma_1 Z_1 + \gamma_2 Z_2 + \dots + \gamma_m Z_m
+$$
+
+
+my Full Model
+
+
+\begin{align*}
+\text{Logit}(\text{P(intention = 1)}) &= \beta_0 + s(\text{selfAssessment}) + \beta_1 \cdot \text{selfConcept} + \beta_2 \cdot \text{support} \\
+&\quad + \gamma_1 \cdot \text{age} + \gamma_2 \cdot \text{parentsEducation} + \gamma_3 \cdot \text{study}
+\end{align*}
+
+
+Generalized Additive Model
+
+
+$$
+\small g(\mathbb{E}[Y | X]) = \beta_0 + \sum_{j=1}^{p} f_j(X_j) + \epsilon
+$$
+
+
+my GAM
+
+$$
+\small \text{Logit}(P(Y = 1 | X)) = \beta_0 + f_1(\text{selfAssessment}) + f_2(\text{selfConcept}) + f_3(\text{support}) + \dots + \epsilon
+$$
+
+
+Logit Model
+
+
+
+$$
+\small P(Y = 1 | X) = \frac{1}{1 + e^{-(\beta_0 + \beta_1 X_1 + \dots + \beta_k X_k)}}
+$$
+
+
+
+$$
+\small \text{Log-Odds} = \log \left( \frac{P(Y = 1 | X)}{1 - P(Y = 1 | X)} \right) = \beta_0 + \beta_1 X_1 + \dots + \beta_k X_k
+$$
+
+
+Probit- Modell
+
+
+
+$$
+\small P(Y = 1 | X) = \Phi(\beta_0 + \beta_1 X_1 + \dots + \beta_k X_k)
+$$
+
+
+
+
+$$
+\text{Logit}(P(\text{intention} = 1 | X)) = \beta_0 + s(\text{selfAssessment}) + \beta_1 \cdot \text{selfConcept} + \beta_2 \cdot \text{support} \\
++ \sum_{i=1}^5 \gamma_i \cdot \text{age\_factor}_i + \delta_1 \cdot \text{parentsEducation} + \delta_2 \cdot \text{study} + \epsilon
+$$
+
+
+Hierarchical Model
+
+
+
+$$
+\small \text{Intention} \sim f(\text{Predictor}_1) + \text{Predictor}_2 + \text{Predictor}_3 + \text{Predictor}_4 + \text{Predictor}_5 + \text{Predictor}_6
+$$
+
+my model
+
+
+$$
+\small \text{Intention} \sim \text{selfAssessment} + \text{selfConcept} + \text{support} + \text{factor(age\_factor)} + \text{parentsEducation} + \text{study}
+$$
+
+AME's
+
+Average Marginal Effects
+
+$$
+\text{AME}_j = \frac{1}{N} \sum_{i=1}^{N} \frac{\partial \hat{P}(Y_i = 1 | X_i)}{\partial X_{ij}}
+$$
+
+
+
+
+
+Log Odds
+
+
+$$
+\small \text{Log-Odds} = \log \left( \frac{P(Y = 1)}{1 - P(Y = 1)} \right)
+$$
+
+
+Odds Ratio
+
+
+
+$$
+\small \text{Odds Ratio} = e^{\beta}
+$$
+
+
+
+Log-Likelihood
+
+
+
+$$
+\small \text{Log-Likelihood} = \sum_{i=1}^n \left( Y_i \log(P(Y_i = 1)) + (1 - Y_i) \log(1 - P(Y_i = 1)) \right)
+$$
+
+
+
+Maximum-Likelihood
+
+
+
+$$
+\small \hat{\beta} = \underset{\beta}{\text{argmax}} \, \text{Log-Likelihood}(\beta)
+$$
+
+
+
+
