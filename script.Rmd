@@ -53,7 +53,7 @@ Campus Use File (CUF) sid2021:1.0.1, DZHW
 
 ```{r main, message=FALSE, warning=FALSE}
 
-# main <- read_dta("data/sid2021_main_p_c_1-0-0.dta")
+main <- read_dta("data/sid2021_main_p_c_1-0-0.dta")
 # saveRDS(main, file = "data/main.Rds")
 
 data <- readRDS("data/main.Rds")
